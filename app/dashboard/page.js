@@ -10,17 +10,20 @@ import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts } from "@/lib/data/accounts";
 import { listAllTransactions } from "@/lib/data/transactions";
 import { listDebts } from "@/lib/data/debts";
+import { getSettings, upsertSettings } from "@/lib/data/settings";
 import {
   MONTH_NAMES, CATEGORIES, formatBRL, toISODate, round2,
   accountsToMap, getEffectiveMonth, computeAccountBalance, computeCardInvoices,
   computeMonthlySeries, computeCategoryBreakdown, computeCardInvoiceHistory,
   computeDebtsAggregate, computeDebtStatus, prevMonthCursor,
+  computeBudgetGroups, GROUP_ORDER, GROUP_LABELS, parseBRNumber,
 } from "@/lib/finance/core";
 
 const DASH_VIEWS = [
   { id: "visao", label: "Visão Geral" },
   { id: "fluxo", label: "Fluxo de Caixa" },
   { id: "despesas", label: "Despesas" },
+  { id: "orcamento", label: "Orçamento 50/30/20" },
   { id: "cartoes", label: "Cartões" },
   { id: "dividas", label: "Dívidas" },
   { id: "patrimonio", label: "Patrimônio" },
@@ -28,6 +31,7 @@ const DASH_VIEWS = [
 
 const CHART_PALETTE = ["#14202e", "#a8432a", "#1f6f5c", "#b8791a", "#5b6572", "#7c9885", "#c9a66b", "#8a5a44", "#4a6fa5", "#9b6b9e"];
 const C_INK = "#14202e", C_TEAL = "#1f6f5c", C_ROSE = "#b23b3b", C_BRICK = "#a8432a", C_BORDER = "#e2e6ea", C_SOFT = "#5b6572", C_MUTEDBAR = "#c7ccd3";
+const GROUP_COLORS = { necessidades: C_INK, desejos: C_BRICK, futuro: C_TEAL };
 
 export default function DashboardPage() {
   const supabase = createClient();
@@ -38,6 +42,7 @@ export default function DashboardPage() {
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [debts, setDebts] = useState([]);
+  const [settings, setSettings] = useState(null);
   const [dashView, setDashView] = useState("visao");
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -50,14 +55,16 @@ export default function DashboardPage() {
       const hid = await getMyHouseholdId(supabase);
       setHouseholdId(hid);
       if (hid) {
-        const [accs, txs, dbts] = await Promise.all([
+        const [accs, txs, dbts, sett] = await Promise.all([
           listAccounts(supabase, hid),
           listAllTransactions(supabase, hid),
           listDebts(supabase, hid),
+          getSettings(supabase, hid),
         ]);
         setAccounts(accs);
         setTransactions(txs);
         setDebts(dbts);
+        setSettings(sett);
       }
       setLoading(false);
     })();
@@ -109,6 +116,34 @@ export default function DashboardPage() {
   const monthlySeries = useMemo(() => computeMonthlySeries(transactions, accountsMap, monthCursor, 6), [transactions, accountsMap, monthCursor]);
   const categoryBreakdown = useMemo(() => computeCategoryBreakdown(transactions, accountsMap, monthCursor), [transactions, accountsMap, monthCursor]);
   const categoryBreakdownPrev = useMemo(() => computeCategoryBreakdown(transactions, accountsMap, prevMonthCursor(monthCursor)), [transactions, accountsMap, monthCursor]);
+
+  const budgetGroups = useMemo(
+    () => (settings ? computeBudgetGroups(transactions, accountsMap, monthCursor, totals.receitas, settings) : []),
+    [transactions, accountsMap, monthCursor, totals.receitas, settings]
+  );
+  const budgetPctSum = useMemo(() => {
+    if (!settings) return 0;
+    return GROUP_ORDER.reduce((sum, g) => {
+      const v = parseBRNumber(settings[`budget_${g}`]);
+      return sum + (isNaN(v) ? 0 : v);
+    }, 0);
+  }, [settings]);
+
+  async function updateBudgetPct(group, rawValue) {
+    const next = { ...settings, [`budget_${group}`]: rawValue };
+    setSettings(next);
+    try {
+      await upsertSettings(supabase, householdId, { [`budget_${group}`]: rawValue });
+    } catch {
+      // mantém o valor local mesmo se a gravação falhar momentaneamente
+    }
+  }
+
+  async function restoreDefaultBudget() {
+    const next = { ...settings, budget_necessidades: 50, budget_desejos: 30, budget_futuro: 20 };
+    setSettings(next);
+    await upsertSettings(supabase, householdId, { budget_necessidades: 50, budget_desejos: 30, budget_futuro: 20 });
+  }
 
   function pctChange(curr, prev) {
     if (prev === 0) return curr === 0 ? 0 : null;
@@ -211,6 +246,81 @@ export default function DashboardPage() {
           </ChartCard>
           <ChartCard title="Comparativo por categoria — este mês x mês anterior">
             <CategoryComparisonChart current={categoryBreakdown.rows} previous={categoryBreakdownPrev.rows} />
+          </ChartCard>
+        </>
+      )}
+
+      {dashView === "orcamento" && settings && (
+        <>
+          <ChartCard
+            title="Percentuais do orçamento"
+            right={<button onClick={restoreDefaultBudget} className="text-xs hover:underline" style={{ color: "var(--ink-soft)" }}>Restaurar 50/30/20</button>}
+          >
+            <p className="text-xs mb-3" style={{ color: "var(--ink-soft)" }}>
+              O planejado de cada grupo é sempre uma % da sua receita real do mês — ajusta sozinho quando sua renda muda.
+            </p>
+            <div className="grid grid-cols-3 gap-3">
+              {GROUP_ORDER.map((g) => (
+                <label key={g} className="block">
+                  <span className="block text-xs mb-1" style={{ color: "var(--ink-soft)" }}>{GROUP_LABELS[g]} (%)</span>
+                  <input
+                    type="text" inputMode="decimal"
+                    value={settings[`budget_${g}`] ?? ""}
+                    onChange={(e) => updateBudgetPct(g, e.target.value)}
+                    className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}
+                  />
+                </label>
+              ))}
+            </div>
+            {Math.round(budgetPctSum) !== 100 && (
+              <p className="text-xs mt-2" style={{ color: "var(--amber)" }}>Os percentuais somam {round2(budgetPctSum)}% — não precisa fechar 100%, mas vale conferir.</p>
+            )}
+          </ChartCard>
+
+          {totals.receitas === 0 && (
+            <div className="text-xs rounded-lg px-3 py-2" style={{ background: "#fdf1ef", color: "var(--rose)" }}>
+              Sem receita lançada em {monthLabel.toLowerCase()} — o valor planejado fica zerado até você lançar uma receita do mês.
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {budgetGroups.map((bg) => (
+              <div key={bg.group} className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm font-medium">{GROUP_LABELS[bg.group]}</p>
+                  <span className="text-xs font-mono" style={{ color: bg.usoPct > 100 ? "var(--rose)" : "var(--ink-soft)" }}>{bg.usoPct}%</span>
+                </div>
+                <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden mb-2">
+                  <div className="h-full rounded-full" style={{ width: `${Math.min(100, bg.usoPct)}%`, background: bg.usoPct > 100 ? "var(--rose)" : GROUP_COLORS[bg.group] }} />
+                </div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span style={{ color: "var(--ink-soft)" }}>Gasto</span>
+                  <span className="font-mono tabular">{formatBRL(bg.gasto)}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span style={{ color: "var(--ink-soft)" }}>Planejado</span>
+                  <span className="font-mono tabular">{formatBRL(bg.planejado)}</span>
+                </div>
+                <div className="flex justify-between text-xs pt-1.5 mt-1.5 border-t" style={{ borderColor: "var(--border)" }}>
+                  <span style={{ color: "var(--ink-soft)" }}>{bg.saldo >= 0 ? "Ainda cabe" : "Estourou em"}</span>
+                  <span className="font-mono tabular font-medium" style={{ color: bg.saldo >= 0 ? "var(--teal)" : "var(--rose)" }}>{formatBRL(Math.abs(bg.saldo))}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <ChartCard title="Planejado x gasto por grupo">
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={budgetGroups.map((bg) => ({ name: GROUP_LABELS[bg.group], planejado: bg.planejado, gasto: bg.gasto }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke={C_BORDER} vertical={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 12, fill: C_SOFT }} axisLine={{ stroke: C_BORDER }} tickLine={false} />
+                <YAxis tick={{ fontSize: 10, fill: C_SOFT }} axisLine={false} tickLine={false} width={44} />
+                <Tooltip formatter={(v) => formatBRL(v)} contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${C_BORDER}` }} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="planejado" name="Planejado" fill={C_MUTEDBAR} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="gasto" name="Gasto" fill={C_BRICK} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
           </ChartCard>
         </>
       )}
