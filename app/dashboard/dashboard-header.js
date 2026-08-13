@@ -3,12 +3,14 @@
 import { useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
-import { Home, Copy, LogOut, LayoutDashboard, Receipt } from "lucide-react";
+import { Home, Copy, LogOut, LayoutDashboard, Receipt, Landmark, PiggyBank } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Visão Geral", Icon: LayoutDashboard },
   { href: "/dashboard/lancamentos", label: "Lançamentos", Icon: Receipt },
+  { href: "/dashboard/contas", label: "Contas & Cartões", Icon: Landmark },
+  { href: "/dashboard/dividas", label: "Dívidas", Icon: PiggyBank },
 ];
 
 export default function DashboardHeader({ userEmail, householdName, inviteCode }) {
@@ -58,15 +60,15 @@ export default function DashboardHeader({ userEmail, householdName, inviteCode }
         </div>
       </div>
 
-      <nav className="max-w-3xl mx-auto px-4 sm:px-6 pb-3">
-        <div className="flex gap-1.5 rounded-xl p-1 border" style={{ borderColor: "var(--border)", background: "var(--paper)" }}>
+      <nav className="max-w-3xl mx-auto px-4 sm:px-6 pb-3 overflow-x-auto">
+        <div className="flex gap-1.5 rounded-xl p-1 border w-max sm:w-full" style={{ borderColor: "var(--border)", background: "var(--paper)" }}>
           {NAV_ITEMS.map((item) => {
             const active = pathname === item.href;
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                className="flex-1 flex items-center justify-center gap-1.5 text-xs sm:text-sm py-2 rounded-lg transition-colors"
+                className="flex items-center justify-center gap-1.5 text-xs sm:text-sm py-2 px-3 sm:flex-1 rounded-lg transition-colors whitespace-nowrap"
                 style={active ? { background: "var(--ink)", color: "white" } : { color: "var(--ink-soft)" }}
               >
                 <item.Icon size={14} /> {item.label}
