@@ -1,0 +1,557 @@
+"use client";
+
+import { useState, useEffect, useMemo, useCallback } from "react";
+import {
+  Wand2, Plus, Trash2, Pencil, X, Check, ChevronLeft, ChevronRight,
+  Wallet, TrendingUp, TrendingDown, Scale, Receipt,
+} from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
+import { getMyHouseholdId, listAccounts, createAccount } from "@/lib/data/accounts";
+import { listTransactionsForMonth, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup } from "@/lib/data/transactions";
+import {
+  CATEGORIES, PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
+  categoryById, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
+} from "@/lib/finance/core";
+
+function emptyForm() {
+  const today = toISODate(new Date());
+  return {
+    type: "despesa", value: "", date: today, categoryId: "alimentacao",
+    subcategory: "Mercado", accountId: "", paymentMethod: "Débito",
+    installment: false, installmentsCount: 2, recurrence: "nenhuma", note: "",
+  };
+}
+
+export default function LancamentosPage() {
+  const supabase = createClient();
+  const today = useMemo(() => toISODate(new Date()), []);
+
+  const [loading, setLoading] = useState(true);
+  const [householdId, setHouseholdId] = useState(null);
+  const [accounts, setAccounts] = useState([]);
+  const [transactions, setTransactions] = useState([]);
+  const [monthCursor, setMonthCursor] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+
+  const [nlpText, setNlpText] = useState("");
+  const [nlpPreview, setNlpPreview] = useState(null);
+  const [showManualForm, setShowManualForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(emptyForm());
+
+  const [newAccountName, setNewAccountName] = useState("");
+  const [newAccountType, setNewAccountType] = useState("conta");
+  const [showAccountBox, setShowAccountBox] = useState(false);
+
+  const [editingCategoryRowId, setEditingCategoryRowId] = useState(null);
+  const [toast, setToast] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  function showToast(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(""), 2600);
+  }
+
+  const reloadTransactions = useCallback(async (hid, month) => {
+    const tx = await listTransactionsForMonth(supabase, hid, month);
+    setTransactions(tx);
+  }, [supabase]);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      const hid = await getMyHouseholdId(supabase);
+      setHouseholdId(hid);
+      if (hid) {
+        const [accs] = await Promise.all([listAccounts(supabase, hid)]);
+        setAccounts(accs);
+        if (accs.length && !form.accountId) {
+          setForm((f) => ({ ...f, accountId: accs[0].id }));
+        }
+        await reloadTransactions(hid, monthCursor);
+      }
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (householdId) reloadTransactions(householdId, monthCursor);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monthCursor, householdId]);
+
+  function shiftMonth(delta) {
+    const [y, m] = monthCursor.split("-").map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    setMonthCursor(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+
+  const monthLabel = useMemo(() => {
+    const [y, m] = monthCursor.split("-").map(Number);
+    return `${MONTH_NAMES[m - 1]} de ${y}`;
+  }, [monthCursor]);
+
+  const totals = useMemo(() => {
+    let receitas = 0, despesas = 0;
+    for (const t of transactions) {
+      if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);
+    }
+    return { receitas: round2(receitas), despesas: round2(despesas), saldo: round2(receitas - despesas), count: transactions.length };
+  }, [transactions]);
+
+  const accountName = useCallback((id) => accounts.find((a) => a.id === id)?.name || "—", [accounts]);
+  const currentCategory = categoryById(form.categoryId) || CATEGORIES[0];
+
+  async function handleAddAccount() {
+    if (!newAccountName.trim() || !householdId) return;
+    try {
+      const acc = await createAccount(supabase, householdId, { name: newAccountName.trim(), type: newAccountType });
+      setAccounts((prev) => [...prev, acc]);
+      if (!form.accountId) setForm((f) => ({ ...f, accountId: acc.id }));
+      setNewAccountName("");
+      showToast("Conta adicionada.");
+    } catch (err) {
+      showToast("Não consegui adicionar a conta.");
+    }
+  }
+
+  async function handleManualSubmit(e) {
+    e.preventDefault();
+    const value = parseBRNumber(form.value);
+    if (!value || isNaN(value) || value <= 0) { showToast("Informe um valor válido (ex: 42,90)."); return; }
+    if (!form.date) { showToast("Informe uma data."); return; }
+    if (!form.accountId) { showToast("Selecione uma conta ou cartão."); return; }
+
+    setBusy(true);
+    try {
+      const base = {
+        type: form.type, value: round2(value), date: form.date,
+        category_id: form.categoryId, subcategory: form.subcategory,
+        account_id: form.accountId, payment_method: form.paymentMethod,
+        installment: form.installment, installment_total: form.installmentsCount,
+        recurrence: form.installment ? "nenhuma" : form.recurrence,
+        note: form.note, source: "manual",
+      };
+
+      if (editingId) {
+        await updateTransaction(supabase, editingId, base);
+        showToast("Lançamento atualizado.");
+      } else {
+        const account = accounts.find((a) => a.id === form.accountId);
+        const created = await createTransaction(supabase, householdId, base, account);
+        showToast(created.length > 1 ? `${created.length} lançamentos criados.` : "Lançamento criado.");
+      }
+      await reloadTransactions(householdId, monthCursor);
+      setForm({ ...emptyForm(), accountId: form.accountId });
+      setEditingId(null);
+      setShowManualForm(false);
+    } catch (err) {
+      showToast("Não consegui salvar. Tente de novo.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function openEdit(tx) {
+    setForm({
+      type: tx.type, value: String(tx.value), date: tx.date, categoryId: tx.category_id,
+      subcategory: tx.subcategory, accountId: tx.account_id, paymentMethod: tx.payment_method || "Débito",
+      installment: false, installmentsCount: 2, recurrence: "nenhuma", note: tx.note || "",
+    });
+    setEditingId(tx.id);
+    setShowManualForm(true);
+  }
+
+  async function handleDelete(tx) {
+    if (tx.group_id) {
+      const wantsGroup = window.confirm(
+        `Esse lançamento faz parte de um grupo (${tx.group_type === "parcelamento" ? "parcelamento" : "recorrência"}).\n\nOK = excluir o grupo inteiro\nCancelar = excluir só esta ocorrência (confirme de novo)`
+      );
+      if (wantsGroup) {
+        await deleteTransactionGroup(supabase, tx.group_id);
+        await reloadTransactions(householdId, monthCursor);
+        showToast("Grupo excluído.");
+        return;
+      }
+      const wantsOne = window.confirm("Excluir só esta ocorrência?");
+      if (!wantsOne) return;
+    } else {
+      if (!window.confirm("Excluir este lançamento?")) return;
+    }
+    await deleteTransaction(supabase, tx.id);
+    await reloadTransactions(householdId, monthCursor);
+    showToast("Lançamento excluído.");
+  }
+
+  async function updateCategoryInline(tx, categoryId, subcategory) {
+    await updateTransaction(supabase, tx.id, { category_id: categoryId, subcategory });
+    await reloadTransactions(householdId, monthCursor);
+    setEditingCategoryRowId(null);
+  }
+
+  function handleNlpParse() {
+    if (!nlpText.trim()) return;
+    const parsed = parseNaturalLanguage(nlpText, accounts.map((a) => ({ id: a.id, name: a.name })));
+    setNlpPreview(parsed);
+  }
+
+  async function confirmNlp() {
+    const parsedValue = parseBRNumber(nlpPreview?.value);
+    if (!nlpPreview || !parsedValue || isNaN(parsedValue) || parsedValue <= 0) {
+      showToast("Não consegui identificar o valor. Ajuste antes de confirmar.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const base = {
+        type: nlpPreview.type, value: round2(parsedValue), date: nlpPreview.date,
+        category_id: nlpPreview.categoryId, subcategory: nlpPreview.subcategory,
+        account_id: nlpPreview.accountId, payment_method: "Débito",
+        installment: false, recurrence: "nenhuma", note: nlpPreview.note, source: "nlp",
+      };
+      await createTransaction(supabase, householdId, base, null);
+      await reloadTransactions(householdId, monthCursor);
+      setNlpText("");
+      setNlpPreview(null);
+      showToast("Lançamento criado a partir do texto.");
+    } catch {
+      showToast("Não consegui salvar. Tente de novo.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading) {
+    return <p className="text-sm" style={{ color: "var(--ink-soft)" }}>Carregando seus lançamentos…</p>;
+  }
+
+  if (!householdId) {
+    return <p className="text-sm" style={{ color: "var(--rose)" }}>Não encontrei sua família. Tente recarregar a página.</p>;
+  }
+
+  return (
+    <div className="space-y-6">
+      {accounts.length === 0 && (
+        <div className="rounded-xl border p-4" style={{ borderColor: "var(--border)", background: "white" }}>
+          <p className="text-sm font-medium mb-2">Cadastre sua primeira conta</p>
+          <p className="text-xs mb-3" style={{ color: "var(--ink-soft)" }}>
+            Antes de lançar algo, você precisa de pelo menos uma conta (pode ser "Dinheiro" mesmo).
+            A tela completa de Contas &amp; Cartões vem numa próxima fase — por enquanto, cadastre rapidinho aqui.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              value={newAccountName} onChange={(e) => setNewAccountName(e.target.value)}
+              placeholder="Nome (ex: Dinheiro, Nubank)"
+              className="flex-1 text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}
+            />
+            <select value={newAccountType} onChange={(e) => setNewAccountType(e.target.value)} className="text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+              <option value="conta">Conta</option>
+              <option value="cartao">Cartão</option>
+            </select>
+            <button onClick={handleAddAccount} className="text-sm px-3 py-2 rounded-lg text-white flex items-center gap-1 justify-center" style={{ background: "var(--ink)" }}>
+              <Plus size={14} /> Adicionar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Navegador de mês */}
+      <div className="flex items-center justify-center gap-4">
+        <button onClick={() => shiftMonth(-1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronLeft size={18} /></button>
+        <span className="text-sm font-medium tabular w-40 text-center">{monthLabel}</span>
+        <button onClick={() => shiftMonth(1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronRight size={18} /></button>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <KpiCard icon={<TrendingUp size={15} />} label="Receitas" value={formatBRL(totals.receitas)} color="var(--teal)" />
+        <KpiCard icon={<TrendingDown size={15} />} label="Despesas" value={formatBRL(totals.despesas)} color="var(--rose)" />
+        <KpiCard icon={<Scale size={15} />} label="Saldo do mês" value={formatBRL(totals.saldo)} color={totals.saldo >= 0 ? "var(--teal)" : "var(--rose)"} />
+        <KpiCard icon={<Receipt size={15} />} label="Lançamentos" value={String(totals.count)} color="var(--ink)" />
+      </div>
+
+      {/* Linguagem natural */}
+      <section>
+        <div className="flex items-center gap-2 mb-2">
+          <Wand2 size={16} style={{ color: "var(--brick)" }} />
+          <h2 className="font-serif text-lg">Lance por escrito</h2>
+        </div>
+        <p className="text-xs mb-3" style={{ color: "var(--ink-soft)" }}>
+          Ex.: "Gastei R$ 42,90 no iFood hoje no Nubank" — eu identifico valor, data, categoria e conta.
+        </p>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <input
+            value={nlpText}
+            onChange={(e) => { setNlpText(e.target.value); setNlpPreview(null); }}
+            onKeyDown={(e) => e.key === "Enter" && handleNlpParse()}
+            placeholder="Descreva o lançamento…"
+            className="flex-1 text-sm px-3.5 py-2.5 rounded-lg border bg-white focus:outline-none focus:ring-2"
+            style={{ borderColor: "var(--border)" }}
+          />
+          <button onClick={handleNlpParse} className="text-sm px-4 py-2.5 rounded-lg text-white flex items-center gap-1.5 justify-center" style={{ background: "var(--brick)" }}>
+            <Wand2 size={14} /> Interpretar
+          </button>
+        </div>
+
+        {nlpPreview && (
+          <div className="mt-3 rounded-lg bg-white p-4" style={{ border: "1px dashed var(--border)" }}>
+            <p className="text-[10px] uppercase tracking-[0.14em] mb-3" style={{ color: "var(--ink-soft)" }}>Prévia do lançamento</p>
+            <div className="grid grid-cols-2 gap-y-2.5 gap-x-3 text-sm font-mono tabular">
+              <span style={{ color: "var(--ink-soft)" }}>Tipo</span>
+              <select value={nlpPreview.type} onChange={(e) => setNlpPreview({ ...nlpPreview, type: e.target.value })} className="text-right bg-transparent">
+                <option value="despesa">Despesa</option>
+                <option value="receita">Receita</option>
+              </select>
+
+              <span style={{ color: "var(--ink-soft)" }}>Valor</span>
+              <input
+                value={nlpPreview.value ?? ""}
+                onChange={(e) => setNlpPreview({ ...nlpPreview, value: e.target.value, valueFound: true })}
+                type="text" inputMode="decimal"
+                className={`text-right bg-transparent outline-none ${!nlpPreview.valueFound ? "text-rose-600" : ""}`}
+                placeholder="ex: 42,90"
+              />
+
+              <span style={{ color: "var(--ink-soft)" }}>Data</span>
+              <input type="date" value={nlpPreview.date} onChange={(e) => setNlpPreview({ ...nlpPreview, date: e.target.value })} className="text-right bg-transparent" />
+
+              <span style={{ color: "var(--ink-soft)" }}>Categoria</span>
+              <select
+                value={nlpPreview.categoryId}
+                onChange={(e) => { const cat = categoryById(e.target.value); setNlpPreview({ ...nlpPreview, categoryId: e.target.value, subcategory: cat.subcategories[0] }); }}
+                className="text-right bg-transparent"
+              >
+                {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+
+              <span style={{ color: "var(--ink-soft)" }}>Subcategoria</span>
+              <select value={nlpPreview.subcategory} onChange={(e) => setNlpPreview({ ...nlpPreview, subcategory: e.target.value })} className="text-right bg-transparent">
+                {(categoryById(nlpPreview.categoryId)?.subcategories || []).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+
+              <span style={{ color: "var(--ink-soft)" }}>Conta</span>
+              <select value={nlpPreview.accountId || ""} onChange={(e) => setNlpPreview({ ...nlpPreview, accountId: e.target.value })} className="text-right bg-transparent">
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </div>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setNlpPreview(null)} className="text-xs px-3 py-1.5 rounded-lg border" style={{ borderColor: "var(--border)" }}>Cancelar</button>
+              <button disabled={busy} onClick={confirmNlp} className="text-xs px-3 py-1.5 rounded-lg text-white flex items-center gap-1 disabled:opacity-60" style={{ background: "var(--teal)" }}>
+                <Check size={13} /> Confirmar lançamento
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Botão do formulário manual */}
+      <div>
+        <button
+          onClick={() => { setShowManualForm((s) => !s); setEditingId(null); setForm({ ...emptyForm(), accountId: accounts[0]?.id || "" }); }}
+          className="text-sm px-3.5 py-2 rounded-lg border bg-white flex items-center gap-1.5"
+          style={{ borderColor: "var(--border)" }}
+        >
+          <Plus size={14} /> {showManualForm ? "Fechar formulário" : "Lançamento manual"}
+        </button>
+      </div>
+
+      {showManualForm && (
+        <form onSubmit={handleManualSubmit} className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--border)" }}>
+          <div className="flex gap-2">
+            {["despesa", "receita"].map((t) => (
+              <button
+                type="button" key={t}
+                onClick={() => setForm((f) => ({ ...f, type: t, categoryId: t === "receita" ? "renda" : "alimentacao", subcategory: t === "receita" ? "Salário" : "Mercado" }))}
+                className="flex-1 text-sm py-2 rounded-lg"
+                style={form.type === t
+                  ? { background: t === "receita" ? "var(--teal)" : "var(--rose)", color: "white", border: "1px solid transparent" }
+                  : { border: "1px solid var(--border)" }}
+              >
+                {t === "despesa" ? "Despesa" : "Receita"}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Valor (R$)">
+              <input required type="text" inputMode="decimal" placeholder="0,00" value={form.value} onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
+            </Field>
+            <Field label="Data">
+              <input required type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
+            </Field>
+
+            <Field label="Categoria">
+              <select
+                value={form.categoryId}
+                onChange={(e) => { const cat = categoryById(e.target.value); setForm((f) => ({ ...f, categoryId: e.target.value, subcategory: cat.subcategories[0] })); }}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}
+              >
+                {CATEGORIES.filter((c) => (form.type === "receita" ? c.group === "receita" : c.group !== "receita")).map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Subcategoria">
+              <select value={form.subcategory} onChange={(e) => setForm((f) => ({ ...f, subcategory: e.target.value }))}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+                {currentCategory.subcategories.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </Field>
+
+            <Field label="Conta / cartão">
+              <select required value={form.accountId} onChange={(e) => setForm((f) => ({ ...f, accountId: e.target.value }))}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+                <option value="" disabled>Selecione</option>
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Forma de pagamento">
+              <select value={form.paymentMethod} onChange={(e) => setForm((f) => ({ ...f, paymentMethod: e.target.value }))}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+                {PAYMENT_METHODS.map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </Field>
+          </div>
+
+          {!editingId && (
+            <div className="grid grid-cols-2 gap-3 items-end">
+              <Field label="Parcelado?">
+                <div className="flex items-center gap-2 h-[38px]">
+                  <input type="checkbox" checked={form.installment} onChange={(e) => setForm((f) => ({ ...f, installment: e.target.checked }))} />
+                  <span className="text-sm" style={{ color: "var(--ink-soft)" }}>Compra parcelada</span>
+                </div>
+              </Field>
+              {form.installment ? (
+                <Field label="Número de parcelas">
+                  <input type="number" min="2" max="48" value={form.installmentsCount} onChange={(e) => setForm((f) => ({ ...f, installmentsCount: parseInt(e.target.value, 10) || 2 }))}
+                    className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
+                </Field>
+              ) : (
+                <Field label="Recorrência">
+                  <select value={form.recurrence} onChange={(e) => setForm((f) => ({ ...f, recurrence: e.target.value }))}
+                    className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+                    {RECURRENCE_OPTIONS.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                  </select>
+                </Field>
+              )}
+            </div>
+          )}
+
+          <Field label="Observação">
+            <input value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} placeholder="opcional"
+              className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
+          </Field>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button type="button" onClick={() => { setShowManualForm(false); setEditingId(null); }} className="text-sm px-3.5 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+              Cancelar
+            </button>
+            <button type="submit" disabled={busy} className="text-sm px-3.5 py-2 rounded-lg text-white disabled:opacity-60" style={{ background: "var(--ink)" }}>
+              {editingId ? "Salvar alterações" : "Adicionar lançamento"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Tabela */}
+      <section>
+        <h2 className="font-serif text-lg mb-3">Lançamentos de {monthLabel.toLowerCase()}</h2>
+        {transactions.length === 0 ? (
+          <div className="text-sm rounded-xl border border-dashed p-8 text-center" style={{ borderColor: "var(--border)", color: "var(--ink-soft)" }}>
+            Nenhum lançamento neste mês ainda.
+          </div>
+        ) : (
+          <div className="rounded-xl border bg-white overflow-hidden" style={{ borderColor: "var(--border)" }}>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-wide" style={{ color: "var(--ink-soft)", background: "var(--paper)" }}>
+                  <th className="px-4 py-2.5 font-medium">Data</th>
+                  <th className="px-4 py-2.5 font-medium">Categoria</th>
+                  <th className="px-4 py-2.5 font-medium hidden sm:table-cell">Conta</th>
+                  <th className="px-4 py-2.5 font-medium hidden sm:table-cell">Obs.</th>
+                  <th className="px-4 py-2.5 font-medium text-right">Valor</th>
+                  <th className="px-4 py-2.5 font-medium w-16"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {transactions.map((t) => {
+                  const cat = categoryById(t.category_id);
+                  const isEditingCat = editingCategoryRowId === t.id;
+                  return (
+                    <tr key={t.id} className="border-t" style={{ borderColor: "var(--border)" }}>
+                      <td className="px-4 py-2.5 tabular whitespace-nowrap">{formatDatePt(t.date)}</td>
+                      <td className="px-4 py-2.5">
+                        {isEditingCat ? (
+                          <div className="flex gap-1">
+                            <select
+                              value={t.category_id}
+                              onChange={(e) => { const c = categoryById(e.target.value); updateCategoryInline(t, e.target.value, c.subcategories[0]); }}
+                              className="text-xs px-1.5 py-1 rounded border" style={{ borderColor: "var(--border)" }}
+                            >
+                              {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                            </select>
+                            <button onClick={() => setEditingCategoryRowId(null)} className="text-slate-400"><X size={13} /></button>
+                          </div>
+                        ) : (
+                          <button onClick={() => setEditingCategoryRowId(t.id)} className="flex items-center gap-1 text-left hover:opacity-70">
+                            <span>{cat?.name}</span>
+                            <span style={{ color: "var(--ink-soft)" }} className="text-xs">· {t.subcategory}</span>
+                            <Pencil size={11} className="opacity-40" />
+                          </button>
+                        )}
+                        {t.installment_current && (
+                          <div className="text-[10px] mt-0.5" style={{ color: "var(--ink-soft)" }}>parcela {t.installment_current}/{t.installment_total}</div>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 hidden sm:table-cell">{accountName(t.account_id)}</td>
+                      <td className="px-4 py-2.5 hidden sm:table-cell max-w-[160px] truncate" style={{ color: "var(--ink-soft)" }}>{t.note || "—"}</td>
+                      <td className="px-4 py-2.5 text-right tabular font-mono" style={{ color: t.type === "receita" ? "var(--teal)" : "var(--rose)" }}>
+                        {t.type === "receita" ? "+" : "-"}{formatBRL(Number(t.value))}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-1.5 justify-end">
+                          <button onClick={() => openEdit(t)} className="text-slate-400 hover:text-slate-700"><Pencil size={13} /></button>
+                          <button onClick={() => handleDelete(t)} className="text-slate-400 hover:text-rose-600"><Trash2 size={13} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {toast && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 text-xs px-4 py-2.5 rounded-full text-white shadow-lg z-50" style={{ background: "var(--ink)" }}>
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KpiCard({ icon, label, value, color }) {
+  return (
+    <div className="rounded-xl border bg-white p-3.5" style={{ borderColor: "var(--border)" }}>
+      <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide mb-1.5" style={{ color: "var(--ink-soft)" }}>
+        <span style={{ color }}>{icon}</span> {label}
+      </div>
+      <div className="font-mono tabular text-base sm:text-lg font-medium" style={{ color }}>{value}</div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="block">
+      <span className="block text-xs mb-1" style={{ color: "var(--ink-soft)" }}>{label}</span>
+      {children}
+    </label>
+  );
+}

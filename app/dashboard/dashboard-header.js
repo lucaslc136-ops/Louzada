@@ -1,12 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { Home, Copy, LogOut } from "lucide-react";
+import { useRouter, usePathname } from "next/navigation";
+import Link from "next/link";
+import { Home, Copy, LogOut, LayoutDashboard, Receipt } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+
+const NAV_ITEMS = [
+  { href: "/dashboard", label: "Visão Geral", Icon: LayoutDashboard },
+  { href: "/dashboard/lancamentos", label: "Lançamentos", Icon: Receipt },
+];
 
 export default function DashboardHeader({ userEmail, householdName, inviteCode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const supabase = createClient();
   const [copyMsg, setCopyMsg] = useState("");
 
@@ -50,6 +57,24 @@ export default function DashboardHeader({ userEmail, householdName, inviteCode }
           </button>
         </div>
       </div>
+
+      <nav className="max-w-3xl mx-auto px-4 sm:px-6 pb-3">
+        <div className="flex gap-1.5 rounded-xl p-1 border" style={{ borderColor: "var(--border)", background: "var(--paper)" }}>
+          {NAV_ITEMS.map((item) => {
+            const active = pathname === item.href;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="flex-1 flex items-center justify-center gap-1.5 text-xs sm:text-sm py-2 rounded-lg transition-colors"
+                style={active ? { background: "var(--ink)", color: "white" } : { color: "var(--ink-soft)" }}
+              >
+                <item.Icon size={14} /> {item.label}
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
     </header>
   );
 }
