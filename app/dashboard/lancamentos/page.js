@@ -7,10 +7,11 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts, createAccount } from "@/lib/data/accounts";
-import { listTransactionsForMonth, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup } from "@/lib/data/transactions";
+import { listTransactionsForMonthWindow, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup } from "@/lib/data/transactions";
 import {
   CATEGORIES, PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
   categoryById, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
+  getEffectiveMonth, accountsToMap, formatBucketLabel,
 } from "@/lib/finance/core";
 
 function emptyForm() {
@@ -55,7 +56,7 @@ export default function LancamentosPage() {
   }
 
   const reloadTransactions = useCallback(async (hid, month) => {
-    const tx = await listTransactionsForMonth(supabase, hid, month);
+    const tx = await listTransactionsForMonthWindow(supabase, hid, month);
     setTransactions(tx);
   }, [supabase]);
 
@@ -93,13 +94,25 @@ export default function LancamentosPage() {
     return `${MONTH_NAMES[m - 1]} de ${y}`;
   }, [monthCursor]);
 
+  const accountsMap = useMemo(() => accountsToMap(accounts), [accounts]);
+
+  // Lista: mostra o que foi comprado NESTE mês (data da compra), independente de cartão ou não.
+  const monthTransactions = useMemo(
+    () => transactions.filter((t) => t.date.startsWith(monthCursor)).sort((a, b) => b.date.localeCompare(a.date)),
+    [transactions, monthCursor]
+  );
+
+  // Totais: usam o mês de IMPACTO no fluxo de caixa — compra no cartão só conta no mês em que a
+  // fatura vence, não no mês da compra. Por isso olha pro "transactions" inteiro (mês atual + anterior),
+  // não só pro monthTransactions. O contador de "Lançamentos" continua batendo com a lista visível.
   const totals = useMemo(() => {
     let receitas = 0, despesas = 0;
     for (const t of transactions) {
+      if (getEffectiveMonth(t, accountsMap) !== monthCursor) continue;
       if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);
     }
-    return { receitas: round2(receitas), despesas: round2(despesas), saldo: round2(receitas - despesas), count: transactions.length };
-  }, [transactions]);
+    return { receitas: round2(receitas), despesas: round2(despesas), saldo: round2(receitas - despesas), count: monthTransactions.length };
+  }, [transactions, accountsMap, monthCursor, monthTransactions]);
 
   const accountName = useCallback((id) => accounts.find((a) => a.id === id)?.name || "—", [accounts]);
   const currentCategory = categoryById(form.categoryId) || CATEGORIES[0];
@@ -271,6 +284,9 @@ export default function LancamentosPage() {
         <KpiCard icon={<Scale size={15} />} label="Saldo do mês" value={formatBRL(totals.saldo)} color={totals.saldo >= 0 ? "var(--teal)" : "var(--rose)"} />
         <KpiCard icon={<Receipt size={15} />} label="Lançamentos" value={String(totals.count)} color="var(--ink)" />
       </div>
+      <p className="text-xs -mt-3" style={{ color: "var(--ink-soft)" }}>
+        Compras no cartão contam em Despesas/Saldo no mês em que a fatura vence, não no mês da compra — por isso a lista abaixo pode ter linhas marcadas com "→ fatura de…" que não entram nesses totais.
+      </p>
 
       {/* Linguagem natural */}
       <section>
@@ -460,7 +476,7 @@ export default function LancamentosPage() {
       {/* Tabela */}
       <section>
         <h2 className="font-serif text-lg mb-3">Lançamentos de {monthLabel.toLowerCase()}</h2>
-        {transactions.length === 0 ? (
+        {monthTransactions.length === 0 ? (
           <div className="text-sm rounded-xl border border-dashed p-8 text-center" style={{ borderColor: "var(--border)", color: "var(--ink-soft)" }}>
             Nenhum lançamento neste mês ainda.
           </div>
@@ -478,9 +494,11 @@ export default function LancamentosPage() {
                 </tr>
               </thead>
               <tbody>
-                {transactions.map((t) => {
+                {monthTransactions.map((t) => {
                   const cat = categoryById(t.category_id);
                   const isEditingCat = editingCategoryRowId === t.id;
+                  const effMonth = getEffectiveMonth(t, accountsMap);
+                  const shifted = effMonth !== t.date.slice(0, 7);
                   return (
                     <tr key={t.id} className="border-t" style={{ borderColor: "var(--border)" }}>
                       <td className="px-4 py-2.5 tabular whitespace-nowrap">{formatDatePt(t.date)}</td>
@@ -505,6 +523,9 @@ export default function LancamentosPage() {
                         )}
                         {t.installment_current && (
                           <div className="text-[10px] mt-0.5" style={{ color: "var(--ink-soft)" }}>parcela {t.installment_current}/{t.installment_total}</div>
+                        )}
+                        {shifted && (
+                          <div className="text-[10px] mt-0.5" style={{ color: "var(--brick)" }}>→ fatura de {formatBucketLabel(effMonth).toLowerCase()}</div>
                         )}
                       </td>
                       <td className="px-4 py-2.5 hidden sm:table-cell">{accountName(t.account_id)}</td>
