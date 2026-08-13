@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink: #14202e;
+  --ink-soft: #5b6572;
+  --paper: #f3f5f7;
+  --surface: #ffffff;
+  --border: #e2e6ea;
+  --brick: #a8432a;
+  --teal: #1f6f5c;
+  --rose: #b23b3b;
+  --amber: #b8791a;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
