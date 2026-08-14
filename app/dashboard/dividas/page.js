@@ -1,10 +1,10 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { Plus, Trash2, Pencil, PiggyBank, Percent, CalendarDays, X } from "lucide-react";
+import { Plus, Trash2, Pencil, PiggyBank, Percent, CalendarDays, X, RefreshCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts } from "@/lib/data/accounts";
-import { listDebts, createDebt, updateDebt, deleteDebt } from "@/lib/data/debts";
+import { listDebts, createDebt, updateDebt, deleteDebt, syncDebtTransactions } from "@/lib/data/debts";
 import { computeDebtStatus, formatBRL, formatDatePt, parseBRNumber, round2, toISODate } from "@/lib/finance/core";
 
 function emptyForm(accountId) {
@@ -59,6 +59,8 @@ export default function DividasPage() {
     [debts, today]
   );
 
+  const dividasDessincronizadas = useMemo(() => debts.filter((d) => !d.group_id).length, [debts]);
+
   async function handleSubmit(e) {
     e.preventDefault();
     const valorTotal = parseBRNumber(form.valorTotal);
@@ -111,10 +113,23 @@ export default function DividasPage() {
   }
 
   async function handleDelete(debt) {
-    if (!window.confirm("Remover esta dívida? Essa ação não pode ser desfeita.")) return;
+    if (!window.confirm("Remover esta dívida? Isso também apaga as parcelas dela lançadas em Lançamentos. Essa ação não pode ser desfeita.")) return;
     await deleteDebt(supabase, debt.id);
     setDebts((prev) => prev.filter((d) => d.id !== debt.id));
     showToast("Dívida removida.");
+  }
+
+  async function handleSync(debt) {
+    setBusy(true);
+    try {
+      const updated = await syncDebtTransactions(supabase, householdId, debt);
+      setDebts((prev) => prev.map((d) => (d.id === debt.id ? updated : d)));
+      showToast("Parcelas sincronizadas em Lançamentos.");
+    } catch {
+      showToast("Não consegui sincronizar essa dívida.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (loading) return <p className="text-sm" style={{ color: "var(--ink-soft)" }}>Carregando…</p>;
@@ -134,6 +149,14 @@ export default function DividasPage() {
           <span className="font-mono tabular text-lg font-medium" style={{ color: totalRestante > 0 ? "var(--rose)" : "var(--teal)" }}>{formatBRL(totalRestante)}</span>
         </div>
       </div>
+
+      {dividasDessincronizadas > 0 && (
+        <div className="text-xs rounded-lg px-3.5 py-2.5 flex items-center gap-2" style={{ background: "#faf1e6", color: "var(--amber)" }}>
+          <RefreshCw size={13} className="shrink-0" />
+          {dividasDessincronizadas === 1 ? "1 dívida" : `${dividasDessincronizadas} dívidas`} cadastrada{dividasDessincronizadas === 1 ? "" : "s"} antes de uma correção recente
+          ainda não tem as parcelas lançadas em Despesas — clique em "Sincronizar" no card dela abaixo.
+        </div>
+      )}
 
       {debts.length === 0 && !showForm && (
         <div className="text-sm rounded-xl border border-dashed p-8 text-center" style={{ borderColor: "var(--border)", color: "var(--ink-soft)" }}>
@@ -159,6 +182,16 @@ export default function DividasPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
+                  {!d.group_id && (
+                    <button
+                      onClick={() => handleSync(d)} disabled={busy}
+                      title="Lançar as parcelas dessa dívida em Despesas"
+                      className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md disabled:opacity-50"
+                      style={{ background: "#faf1e6", color: "var(--amber)" }}
+                    >
+                      <RefreshCw size={11} /> Sincronizar
+                    </button>
+                  )}
                   <button onClick={() => openEdit(d)} className="text-slate-400 hover:text-slate-700"><Pencil size={14} /></button>
                   <button onClick={() => handleDelete(d)} className="text-slate-400 hover:text-rose-600"><Trash2 size={14} /></button>
                 </div>
