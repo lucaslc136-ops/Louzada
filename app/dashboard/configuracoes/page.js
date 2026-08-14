@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { User, Mail, KeyRound, LogOut, Check } from "lucide-react";
+import { User, Mail, KeyRound, LogOut, Check, Users, Copy } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
 export default function ConfiguracoesPage() {
@@ -13,6 +13,10 @@ export default function ConfiguracoesPage() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [savingName, setSavingName] = useState(false);
+
+  const [householdName, setHouseholdName] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+  const [copyMsg, setCopyMsg] = useState("");
 
   const [novaSenha, setNovaSenha] = useState("");
   const [confirmarSenha, setConfirmarSenha] = useState("");
@@ -31,11 +35,32 @@ export default function ConfiguracoesPage() {
       if (user) {
         setEmail(user.email || "");
         setName(user.user_metadata?.full_name || "");
+
+        const { data: membership } = await supabase
+          .from("household_members")
+          .select("household_id, households(name, invite_code)")
+          .eq("user_id", user.id)
+          .limit(1)
+          .maybeSingle();
+        if (membership) {
+          setHouseholdName(membership.households?.name || "");
+          setInviteCode(membership.households?.invite_code || "");
+        }
       }
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function copyInvite() {
+    try {
+      await navigator.clipboard.writeText(inviteCode);
+      setCopyMsg("Copiado!");
+    } catch {
+      setCopyMsg(`Código: ${inviteCode}`);
+    }
+    setTimeout(() => setCopyMsg(""), 3000);
+  }
 
   async function handleSaveName(e) {
     e.preventDefault();
@@ -100,6 +125,18 @@ export default function ConfiguracoesPage() {
         <p className="text-sm font-medium flex items-center gap-1.5 mb-2" style={{ color: "var(--ink)" }}><Mail size={15} /> E-mail</p>
         <p className="text-sm" style={{ color: "var(--ink-soft)" }}>{email}</p>
         <p className="text-xs mt-1.5" style={{ color: "var(--ink-soft)" }}>Trocar o e-mail de login ainda não está disponível por aqui.</p>
+      </div>
+
+      <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+        <p className="text-sm font-medium flex items-center gap-1.5 mb-2" style={{ color: "var(--ink)" }}><Users size={15} /> {householdName || "Sua família"}</p>
+        <p className="text-xs mb-3" style={{ color: "var(--ink-soft)" }}>Compartilhe esse código com quem você quer que veja os mesmos dados.</p>
+        <button
+          onClick={copyInvite}
+          className="flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border font-mono"
+          style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+        >
+          <Copy size={13} /> {copyMsg || inviteCode}
+        </button>
       </div>
 
       <form onSubmit={handleChangePassword} className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--border)" }}>

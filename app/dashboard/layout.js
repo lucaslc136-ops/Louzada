@@ -26,7 +26,6 @@ export default async function DashboardLayout({ children }) {
         <DashboardTopbar
           userEmail={user.email}
           householdName={membership.households?.name}
-          inviteCode={membership.households?.invite_code}
         />
         <main className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-10">{children}</main>
       </div>
