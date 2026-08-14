@@ -3,20 +3,21 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   ResponsiveContainer, BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
 } from "recharts";
-import { Wallet, TrendingUp, TrendingDown, Scale, CreditCard, PiggyBank, ChevronLeft, ChevronRight } from "lucide-react";
+import { Wallet, TrendingUp, TrendingDown, Scale, CreditCard, PiggyBank, ChevronLeft, ChevronRight, Home, Gauge } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts } from "@/lib/data/accounts";
 import { listAllTransactions } from "@/lib/data/transactions";
 import { listDebts } from "@/lib/data/debts";
 import { getSettings, upsertSettings } from "@/lib/data/settings";
 import {
-  MONTH_NAMES, CATEGORIES, formatBRL, toISODate, round2,
+  MONTH_NAMES, CATEGORIES, formatBRL, formatDatePt, toISODate, round2,
   accountsToMap, getEffectiveMonth, computeAccountBalance, computeCardInvoices,
   computeMonthlySeries, computeCategoryBreakdown, computeCardInvoiceHistory,
   computeDebtsAggregate, computeDebtStatus, prevMonthCursor,
   computeBudgetGroups, GROUP_ORDER, GROUP_LABELS, parseBRNumber,
+  computeGoalMetrics, computeGoalProjection, computePreparationIndex, formatBucketLabel,
 } from "@/lib/finance/core";
 
 const DASH_VIEWS = [
@@ -26,6 +27,7 @@ const DASH_VIEWS = [
   { id: "orcamento", label: "Orçamento 50/30/20" },
   { id: "cartoes", label: "Cartões" },
   { id: "dividas", label: "Dívidas" },
+  { id: "imovel", label: "Primeiro Imóvel" },
   { id: "patrimonio", label: "Patrimônio" },
 ];
 
@@ -143,6 +145,34 @@ export default function DashboardPage() {
     const next = { ...settings, budget_necessidades: 50, budget_desejos: 30, budget_futuro: 20 };
     setSettings(next);
     await upsertSettings(supabase, householdId, { budget_necessidades: 50, budget_desejos: 30, budget_futuro: 20 });
+  }
+
+  const goalMetrics = useMemo(() => (settings ? computeGoalMetrics(settings, transactions, today) : null), [settings, transactions, today]);
+  const goalProjection = useMemo(() => (settings ? computeGoalProjection(settings, transactions, today, 12) : []), [settings, transactions, today]);
+
+  const receitaMedia6m = useMemo(() => {
+    const comReceita = monthlySeries.filter((m) => m.receitas > 0);
+    return comReceita.length ? round2(comReceita.reduce((s, m) => s + m.receitas, 0) / comReceita.length) : 0;
+  }, [monthlySeries]);
+
+  const despesaMedia6m = useMemo(() => round2(monthlySeries.reduce((s, m) => s + m.despesas, 0) / 6), [monthlySeries]);
+
+  const preparationIndex = useMemo(() => {
+    if (!goalMetrics) return null;
+    return computePreparationIndex({
+      progressoPct: goalMetrics.progressoPct, mediaMensal: goalMetrics.mediaMensal,
+      receitaMedia: receitaMedia6m, comprometidoMes, saldoTotalContas, despesaMedia: despesaMedia6m,
+    });
+  }, [goalMetrics, receitaMedia6m, comprometidoMes, saldoTotalContas, despesaMedia6m]);
+
+  async function updateGoalField(field, rawValue) {
+    const next = { ...settings, [field]: rawValue };
+    setSettings(next);
+    try {
+      await upsertSettings(supabase, householdId, { [field]: rawValue });
+    } catch {
+      // mantém o valor local mesmo se a gravação falhar momentaneamente
+    }
   }
 
   function pctChange(curr, prev) {
@@ -390,6 +420,123 @@ export default function DashboardPage() {
         )
       )}
 
+      {dashView === "imovel" && goalMetrics && (
+        <>
+          <ChartCard title="Configurar a meta">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <label className="block">
+                <span className="block text-xs mb-1" style={{ color: "var(--ink-soft)" }}>Valor do imóvel (R$)</span>
+                <input type="text" inputMode="decimal" value={settings.goal_valor_imovel ?? ""} onChange={(e) => updateGoalField("goal_valor_imovel", e.target.value)}
+                  placeholder="ex: 400.000" className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
+              </label>
+              <label className="block">
+                <span className="block text-xs mb-1" style={{ color: "var(--ink-soft)" }}>Entrada (%)</span>
+                <input type="text" inputMode="decimal" value={settings.goal_pct_entrada ?? ""} onChange={(e) => updateGoalField("goal_pct_entrada", e.target.value)}
+                  className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
+              </label>
+              <label className="block">
+                <span className="block text-xs mb-1" style={{ color: "var(--ink-soft)" }}>Prazo desejado (meses)</span>
+                <input type="number" min="1" value={settings.goal_prazo_meses ?? ""} onChange={(e) => updateGoalField("goal_prazo_meses", e.target.value)}
+                  placeholder="opcional" className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
+              </label>
+              <label className="block">
+                <span className="block text-xs mb-1" style={{ color: "var(--ink-soft)" }}>Já tinha guardado (R$)</span>
+                <input type="text" inputMode="decimal" value={settings.goal_valor_inicial ?? ""} onChange={(e) => updateGoalField("goal_valor_inicial", e.target.value)}
+                  className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
+              </label>
+            </div>
+            <p className="text-xs mt-3" style={{ color: "var(--ink-soft)" }}>
+              Pra contar como aporte, lance uma despesa em <strong>Futuro › Fundo do imóvel</strong> na aba Lançamentos.
+            </p>
+          </ChartCard>
+
+          {goalMetrics.valorImovel > 0 && (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <ChartCard title="Índice de preparação">
+                  <div className="flex items-center gap-4 mb-3">
+                    <div
+                      className="w-16 h-16 rounded-full flex items-center justify-center text-lg font-mono font-medium shrink-0"
+                      style={{ background: prepTint(preparationIndex.total), color: prepColor(preparationIndex.total) }}
+                    >
+                      {preparationIndex.total}
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium" style={{ color: prepColor(preparationIndex.total) }}>{preparationIndex.label}</p>
+                      <p className="text-xs" style={{ color: "var(--ink-soft)" }}>de 0 a 100</p>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {preparationIndex.componentes.map((c) => (
+                      <div key={c.key}>
+                        <div className="flex justify-between text-xs mb-0.5">
+                          <span style={{ color: "var(--ink-soft)" }}>{c.label} <span className="opacity-60">({c.peso}%)</span></span>
+                          <span className="font-mono tabular">{c.score}</span>
+                        </div>
+                        <div className="w-full h-1 rounded-full bg-slate-100 overflow-hidden">
+                          <div className="h-full rounded-full" style={{ width: `${c.score}%`, background: prepColor(c.score) }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </ChartCard>
+
+                <ChartCard title="Progresso da entrada">
+                  <div className="w-full h-2 rounded-full bg-slate-100 overflow-hidden mb-3">
+                    <div className="h-full rounded-full" style={{ width: `${goalMetrics.progressoPct}%`, background: "var(--teal)" }} />
+                  </div>
+                  <div className="space-y-1.5 text-xs">
+                    <div className="flex justify-between"><span style={{ color: "var(--ink-soft)" }}>Entrada necessária</span><span className="font-mono tabular">{formatBRL(goalMetrics.valorEntrada)}</span></div>
+                    <div className="flex justify-between"><span style={{ color: "var(--ink-soft)" }}>Já guardado</span><span className="font-mono tabular" style={{ color: "var(--teal)" }}>{formatBRL(goalMetrics.acumulado)}</span></div>
+                    <div className="flex justify-between"><span style={{ color: "var(--ink-soft)" }}>Falta</span><span className="font-mono tabular" style={{ color: "var(--rose)" }}>{formatBRL(goalMetrics.faltante)}</span></div>
+                    <div className="flex justify-between pt-1.5 mt-1.5 border-t" style={{ borderColor: "var(--border)" }}>
+                      <span style={{ color: "var(--ink-soft)" }}>Média guardada / mês</span><span className="font-mono tabular">{formatBRL(goalMetrics.mediaMensal)}</span>
+                    </div>
+                    {goalMetrics.mesesParaAtingir !== null && (
+                      <div className="flex justify-between"><span style={{ color: "var(--ink-soft)" }}>No ritmo atual</span>
+                        <span className="font-mono tabular">
+                          {goalMetrics.mesesParaAtingir === 0 ? "já atingiu!" : `${goalMetrics.mesesParaAtingir} meses (${formatDatePt(goalMetrics.dataEstimada)})`}
+                        </span>
+                      </div>
+                    )}
+                    {goalMetrics.prazoMeses && goalMetrics.prazoAtingivel === false && (
+                      <p className="text-[11px] pt-1" style={{ color: "var(--rose)" }}>
+                        No ritmo atual, o prazo de {goalMetrics.prazoMeses} meses que você definiu não vai ser alcançado — considere guardar mais por mês ou esticar o prazo.
+                      </p>
+                    )}
+                  </div>
+                </ChartCard>
+              </div>
+
+              <ChartCard title="Projeção — próximos 12 meses">
+                <ResponsiveContainer width="100%" height={220}>
+                  <AreaChart data={goalProjection}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={C_BORDER} vertical={false} />
+                    <XAxis dataKey="label" tick={{ fontSize: 10, fill: C_SOFT }} axisLine={{ stroke: C_BORDER }} tickLine={false} interval={1} />
+                    <YAxis tick={{ fontSize: 10, fill: C_SOFT }} axisLine={false} tickLine={false} width={50} />
+                    <Tooltip formatter={(v) => formatBRL(v)} contentStyle={{ fontSize: 12, borderRadius: 8, border: `1px solid ${C_BORDER}` }} />
+                    <ReferenceLine y={goalMetrics.valorEntrada} stroke={C_BRICK} strokeDasharray="4 4" label={{ value: "Meta", position: "insideTopRight", fontSize: 11, fill: C_BRICK }} />
+                    <Area type="monotone" dataKey="acumulado" name="Acumulado" stroke={C_TEAL} fill={C_TEAL} fillOpacity={0.12} strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+                {goalMetrics.mediaMensal === 0 && (
+                  <p className="text-xs mt-2" style={{ color: "var(--ink-soft)" }}>
+                    Ainda não há aportes lançados nos últimos 6 meses — a projeção fica reta até você começar a guardar.
+                  </p>
+                )}
+              </ChartCard>
+
+              {comprometidoMes > 0 && receitaMedia6m > 0 && comprometidoMes / receitaMedia6m > 0.3 && (
+                <div className="text-xs rounded-lg px-3 py-2.5" style={{ background: "#fdf1ef", color: "var(--rose)" }}>
+                  Suas faturas e parcelas de dívidas já comprometem {Math.round((comprometidoMes / receitaMedia6m) * 100)}% da sua renda média —
+                  isso reduz o quanto sobra pra guardar todo mês. Vale dar uma olhada na aba Dívidas.
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+
       {dashView === "patrimonio" && (
         <>
           <KpiCard icon={<Scale size={15} />} label="Patrimônio líquido" value={formatBRL(patrimonioLiquido)} color={patrimonioLiquido >= 0 ? "var(--teal)" : "var(--rose)"} />
@@ -536,4 +683,16 @@ function CategoryComparisonChart({ current, previous }) {
       </BarChart>
     </ResponsiveContainer>
   );
+}
+
+function prepColor(score) {
+  if (score >= 70) return C_TEAL;
+  if (score >= 34) return C_BRICK;
+  return C_ROSE;
+}
+
+function prepTint(score) {
+  if (score >= 70) return "#e8f3f0";
+  if (score >= 34) return "#fdf1ed";
+  return "#fbeeee";
 }
