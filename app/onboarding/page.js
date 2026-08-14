@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { LogoLockup } from "@/components/logo";
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -82,6 +83,9 @@ export default function OnboardingPage() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4" style={{ background: "var(--paper)" }}>
       <div className="w-full max-w-sm">
+        <div className="flex justify-center mb-6">
+          <LogoLockup height={40} />
+        </div>
         <h1 className="font-serif text-2xl text-center mb-2" style={{ color: "var(--ink)" }}>Quase lá</h1>
         <p className="text-xs text-center mb-6" style={{ color: "var(--ink-soft)" }}>
           Crie sua família ou entre em uma que já existe com o código de convite.

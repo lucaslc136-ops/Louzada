@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { LogoLockup } from "@/components/logo";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -34,12 +35,9 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4" style={{ background: "var(--paper)" }}>
       <div className="w-full max-w-sm">
-        <p className="text-xs uppercase tracking-[0.16em] mb-1 text-center" style={{ color: "var(--brick)" }}>
-          Planejamento Financeiro
-        </p>
-        <h1 className="font-serif text-2xl text-center mb-8" style={{ color: "var(--ink)" }}>
-          Família Louzada
-        </h1>
+        <div className="flex justify-center mb-8">
+          <LogoLockup height={52} />
+        </div>
 
         <form onSubmit={handleSubmit} className="bg-white rounded-xl border p-5 space-y-3" style={{ borderColor: "var(--border)" }}>
           <label className="block">
