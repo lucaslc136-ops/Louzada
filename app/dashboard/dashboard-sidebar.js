@@ -1,10 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
-import { LayoutDashboard, Receipt, Landmark, PiggyBank, Calculator, Plus, LogOut } from "lucide-react";
+import { usePathname } from "next/navigation";
+import { LayoutDashboard, Receipt, Landmark, PiggyBank, Calculator, Plus, Settings } from "lucide-react";
 import { LogoIcon } from "@/components/logo";
-import { createClient } from "@/lib/supabase/client";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Visão Geral", Icon: LayoutDashboard },
@@ -16,14 +15,7 @@ const NAV_ITEMS = [
 
 export default function DashboardSidebar() {
   const pathname = usePathname();
-  const router = useRouter();
-  const supabase = createClient();
-
-  async function handleLogout() {
-    await supabase.auth.signOut();
-    router.push("/login");
-    router.refresh();
-  }
+  const settingsActive = pathname === "/dashboard/configuracoes";
 
   return (
     <aside
@@ -66,14 +58,17 @@ export default function DashboardSidebar() {
         })}
       </nav>
 
-      <button
-        onClick={handleLogout}
-        className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 hover:text-rose-600"
-        style={{ color: "var(--ink-soft)" }}
-        title="Sair"
+      <Link
+        href="/dashboard/configuracoes"
+        title="Configurações"
+        className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 relative"
+        style={settingsActive ? { background: "#fdf1ed", color: "var(--brick)" } : { color: "var(--ink-soft)" }}
       >
-        <LogOut size={18} />
-      </button>
+        {settingsActive && (
+          <span className="absolute -left-3 top-1/2 -translate-y-1/2 w-1 h-5 rounded-full" style={{ background: "var(--brick)" }} />
+        )}
+        <Settings size={18} />
+      </Link>
     </aside>
   );
 }
