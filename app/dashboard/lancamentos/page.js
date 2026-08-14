@@ -3,11 +3,11 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Wand2, Plus, Trash2, Pencil, X, Check, ChevronLeft, ChevronRight,
-  Wallet, TrendingUp, TrendingDown, Scale, Receipt,
+  Wallet, TrendingUp, TrendingDown, Scale, Receipt, SlidersHorizontal,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts, createAccount } from "@/lib/data/accounts";
-import { listTransactionsForMonthWindow, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup } from "@/lib/data/transactions";
+import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup } from "@/lib/data/transactions";
 import {
   CATEGORIES, PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
   categoryById, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
@@ -35,6 +35,15 @@ export default function LancamentosPage() {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
+
+  const [showFilters, setShowFilters] = useState(false);
+  const [filterAccountId, setFilterAccountId] = useState("");
+  const [filterCategoryId, setFilterCategoryId] = useState("");
+  const [filterType, setFilterType] = useState("");
+  const [filterFrom, setFilterFrom] = useState("");
+  const [filterTo, setFilterTo] = useState("");
+  const [customRangeTx, setCustomRangeTx] = useState(null); // preenchido só quando o período personalizado está ativo
+  const [rangeLoading, setRangeLoading] = useState(false);
 
   const [nlpText, setNlpText] = useState("");
   const [nlpPreview, setNlpPreview] = useState(null);
@@ -101,6 +110,51 @@ export default function LancamentosPage() {
     () => transactions.filter((t) => t.date.startsWith(monthCursor)).sort((a, b) => b.date.localeCompare(a.date)),
     [transactions, monthCursor]
   );
+
+  // Se um período personalizado estiver ativo, ele substitui a lista do mês; senão, usa o mês normal.
+  const baseTransactions = customRangeTx !== null ? customRangeTx : monthTransactions;
+
+  // Filtros de conta/cartão, categoria e tipo — aplicados por cima da lista já carregada, sem nova busca.
+  const filteredTransactions = useMemo(() => {
+    return baseTransactions.filter((t) => {
+      if (filterAccountId && t.account_id !== filterAccountId) return false;
+      if (filterCategoryId && t.category_id !== filterCategoryId) return false;
+      if (filterType && t.type !== filterType) return false;
+      return true;
+    });
+  }, [baseTransactions, filterAccountId, filterCategoryId, filterType]);
+
+  const filtersActive = !!(filterAccountId || filterCategoryId || filterType || customRangeTx !== null);
+
+  const filteredSum = useMemo(() => {
+    let receitas = 0, despesas = 0;
+    for (const t of filteredTransactions) {
+      if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);
+    }
+    return { receitas: round2(receitas), despesas: round2(despesas) };
+  }, [filteredTransactions]);
+
+  async function applyCustomRange() {
+    if (!filterFrom || !filterTo) { showToast("Preencha as duas datas do período."); return; }
+    setRangeLoading(true);
+    try {
+      const rows = await listTransactionsForRange(supabase, householdId, filterFrom, filterTo);
+      setCustomRangeTx(rows.sort((a, b) => b.date.localeCompare(a.date)));
+    } catch {
+      showToast("Não consegui buscar esse período.");
+    } finally {
+      setRangeLoading(false);
+    }
+  }
+
+  function clearAllFilters() {
+    setFilterAccountId("");
+    setFilterCategoryId("");
+    setFilterType("");
+    setFilterFrom("");
+    setFilterTo("");
+    setCustomRangeTx(null);
+  }
 
   // Totais: usam o mês de IMPACTO no fluxo de caixa — compra no cartão só conta no mês em que a
   // fatura vence, não no mês da compra. Por isso olha pro "transactions" inteiro (mês atual + anterior),
@@ -270,12 +324,82 @@ export default function LancamentosPage() {
         </div>
       )}
 
-      {/* Navegador de mês */}
-      <div className="flex items-center justify-center gap-4">
-        <button onClick={() => shiftMonth(-1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronLeft size={18} /></button>
-        <span className="text-sm font-medium tabular w-40 text-center">{monthLabel}</span>
-        <button onClick={() => shiftMonth(1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronRight size={18} /></button>
+      {/* Navegador de mês (esconde quando um período personalizado está ativo) */}
+      {customRangeTx === null ? (
+        <div className="flex items-center justify-center gap-4">
+          <button onClick={() => shiftMonth(-1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronLeft size={18} /></button>
+          <span className="text-sm font-medium tabular w-40 text-center">{monthLabel}</span>
+          <button onClick={() => shiftMonth(1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronRight size={18} /></button>
+        </div>
+      ) : (
+        <div className="flex items-center justify-center gap-2 text-sm">
+          <span style={{ color: "var(--ink-soft)" }}>Período: {formatDatePt(filterFrom)} até {formatDatePt(filterTo)}</span>
+          <button onClick={clearAllFilters} className="text-xs underline" style={{ color: "var(--brick)" }}>voltar pro mês</button>
+        </div>
+      )}
+
+      {/* Filtros */}
+      <div>
+        <button
+          onClick={() => setShowFilters((s) => !s)}
+          className="text-sm px-3.5 py-2 rounded-lg border bg-white flex items-center gap-1.5"
+          style={{ borderColor: filtersActive ? "var(--brick)" : "var(--border)", color: filtersActive ? "var(--brick)" : "var(--ink)" }}
+        >
+          <SlidersHorizontal size={14} /> Filtros {filtersActive && "· ativos"}
+        </button>
       </div>
+
+      {showFilters && (
+        <div className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--border)" }}>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Field label="Conta / cartão">
+              <select value={filterAccountId} onChange={(e) => setFilterAccountId(e.target.value)}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+                <option value="">Todas</option>
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Categoria">
+              <select value={filterCategoryId} onChange={(e) => setFilterCategoryId(e.target.value)}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+                <option value="">Todas</option>
+                {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Tipo">
+              <select value={filterType} onChange={(e) => setFilterType(e.target.value)}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+                <option value="">Todos</option>
+                <option value="despesa">Despesa</option>
+                <option value="receita">Receita</option>
+              </select>
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-end">
+            <Field label="Período — de">
+              <input type="date" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
+            </Field>
+            <Field label="até">
+              <input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)}
+                className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
+            </Field>
+            <button onClick={applyCustomRange} disabled={rangeLoading} className="text-sm px-3 py-2 rounded-lg text-white disabled:opacity-60" style={{ background: "var(--ink)" }}>
+              {rangeLoading ? "Buscando…" : "Buscar período"}
+            </button>
+            <button onClick={clearAllFilters} className="text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
+              Limpar filtros
+            </button>
+          </div>
+
+          {filtersActive && (
+            <p className="text-xs pt-1 border-t" style={{ borderColor: "var(--border)", color: "var(--ink-soft)" }}>
+              Mostrando {filteredTransactions.length} lançamento(s) — receitas {formatBRL(filteredSum.receitas)}, despesas {formatBRL(filteredSum.despesas)}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* KPIs */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -475,10 +599,12 @@ export default function LancamentosPage() {
 
       {/* Tabela */}
       <section>
-        <h2 className="font-serif text-lg mb-3">Lançamentos de {monthLabel.toLowerCase()}</h2>
-        {monthTransactions.length === 0 ? (
+        <h2 className="font-serif text-lg mb-3">
+          {filtersActive ? "Lançamentos filtrados" : `Lançamentos de ${monthLabel.toLowerCase()}`}
+        </h2>
+        {filteredTransactions.length === 0 ? (
           <div className="text-sm rounded-xl border border-dashed p-8 text-center" style={{ borderColor: "var(--border)", color: "var(--ink-soft)" }}>
-            Nenhum lançamento neste mês ainda.
+            {filtersActive ? "Nenhum lançamento encontrado com esses filtros." : "Nenhum lançamento neste mês ainda."}
           </div>
         ) : (
           <div className="rounded-xl border bg-white overflow-hidden" style={{ borderColor: "var(--border)" }}>
@@ -494,7 +620,7 @@ export default function LancamentosPage() {
                 </tr>
               </thead>
               <tbody>
-                {monthTransactions.map((t) => {
+                {filteredTransactions.map((t) => {
                   const cat = categoryById(t.category_id);
                   const isEditingCat = editingCategoryRowId === t.id;
                   const effMonth = getEffectiveMonth(t, accountsMap);
