@@ -126,14 +126,6 @@ export default function LancamentosPage() {
 
   const filtersActive = !!(filterAccountId || filterCategoryId || filterType || customRangeTx !== null);
 
-  const filteredSum = useMemo(() => {
-    let receitas = 0, despesas = 0;
-    for (const t of filteredTransactions) {
-      if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);
-    }
-    return { receitas: round2(receitas), despesas: round2(despesas) };
-  }, [filteredTransactions]);
-
   async function applyCustomRange() {
     if (!filterFrom || !filterTo) { showToast("Preencha as duas datas do período."); return; }
     setRangeLoading(true);
@@ -156,17 +148,24 @@ export default function LancamentosPage() {
     setCustomRangeTx(null);
   }
 
-  // Totais: usam o mês de IMPACTO no fluxo de caixa — compra no cartão só conta no mês em que a
-  // fatura vence, não no mês da compra. Por isso olha pro "transactions" inteiro (mês atual + anterior),
-  // não só pro monthTransactions. O contador de "Lançamentos" continua batendo com a lista visível.
+  // Totais: por padrão usam o mês de IMPACTO no fluxo de caixa — compra no cartão só conta no mês
+  // em que a fatura vence, não no mês da compra. Mas quando algum filtro está ativo, os totais passam
+  // a refletir exatamente a lista filtrada abaixo (senão os números do topo não bateriam com a tabela).
   const totals = useMemo(() => {
+    if (filtersActive) {
+      let receitas = 0, despesas = 0;
+      for (const t of filteredTransactions) {
+        if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);
+      }
+      return { receitas: round2(receitas), despesas: round2(despesas), saldo: round2(receitas - despesas), count: filteredTransactions.length };
+    }
     let receitas = 0, despesas = 0;
     for (const t of transactions) {
       if (getEffectiveMonth(t, accountsMap) !== monthCursor) continue;
       if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);
     }
     return { receitas: round2(receitas), despesas: round2(despesas), saldo: round2(receitas - despesas), count: monthTransactions.length };
-  }, [transactions, accountsMap, monthCursor, monthTransactions]);
+  }, [transactions, accountsMap, monthCursor, monthTransactions, filtersActive, filteredTransactions]);
 
   const accountName = useCallback((id) => accounts.find((a) => a.id === id)?.name || "—", [accounts]);
   const currentCategory = categoryById(form.categoryId) || CATEGORIES[0];
@@ -395,7 +394,7 @@ export default function LancamentosPage() {
 
           {filtersActive && (
             <p className="text-xs pt-1 border-t" style={{ borderColor: "var(--border)", color: "var(--ink-soft)" }}>
-              Mostrando {filteredTransactions.length} lançamento(s) — receitas {formatBRL(filteredSum.receitas)}, despesas {formatBRL(filteredSum.despesas)}
+              Os cards acima (Receitas, Despesas, Saldo, Lançamentos) refletem só o que está filtrado aqui.
             </p>
           )}
         </div>
@@ -408,9 +407,11 @@ export default function LancamentosPage() {
         <KpiCard icon={<Scale size={15} />} label="Saldo do mês" value={formatBRL(totals.saldo)} color={totals.saldo >= 0 ? "var(--teal)" : "var(--rose)"} />
         <KpiCard icon={<Receipt size={15} />} label="Lançamentos" value={String(totals.count)} color="var(--ink)" />
       </div>
-      <p className="text-xs -mt-3" style={{ color: "var(--ink-soft)" }}>
-        Compras no cartão contam em Despesas/Saldo no mês em que a fatura vence, não no mês da compra — por isso a lista abaixo pode ter linhas marcadas com "→ fatura de…" que não entram nesses totais.
-      </p>
+      {!filtersActive && (
+        <p className="text-xs -mt-3" style={{ color: "var(--ink-soft)" }}>
+          Compras no cartão contam em Despesas/Saldo no mês em que a fatura vence, não no mês da compra — por isso a lista abaixo pode ter linhas marcadas com "→ fatura de…" que não entram nesses totais.
+        </p>
+      )}
 
       {/* Linguagem natural */}
       <section>
