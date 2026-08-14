@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { LogoLockup } from "@/components/logo";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -58,10 +59,10 @@ export default function SignupPage() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4" style={{ background: "var(--paper)" }}>
       <div className="w-full max-w-sm">
-        <p className="text-xs uppercase tracking-[0.16em] mb-1 text-center" style={{ color: "var(--brick)" }}>
-          Planejamento Financeiro
-        </p>
-        <h1 className="font-serif text-2xl text-center mb-8" style={{ color: "var(--ink)" }}>
+        <div className="flex justify-center mb-6">
+          <LogoLockup height={44} />
+        </div>
+        <h1 className="font-serif text-xl text-center mb-8" style={{ color: "var(--ink-soft)" }}>
           Criar conta
         </h1>
 

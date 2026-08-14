@@ -3,8 +3,9 @@
 import { useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
-import { Home, Copy, LogOut, LayoutDashboard, Receipt, Landmark, PiggyBank } from "lucide-react";
+import { Copy, LogOut, LayoutDashboard, Receipt, Landmark, PiggyBank } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import { LogoLockup } from "@/components/logo";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Visão Geral", Icon: LayoutDashboard },
@@ -37,15 +38,13 @@ export default function DashboardHeader({ userEmail, householdName, inviteCode }
 
   return (
     <header className="border-b bg-white" style={{ borderColor: "var(--border)" }}>
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
-        <div>
-          <p className="text-xs uppercase tracking-[0.16em]" style={{ color: "var(--brick)" }}>
-            <Home size={11} className="inline mr-1" />
-            {householdName || "Planejamento Financeiro"}
-          </p>
-          <p className="text-xs mt-0.5" style={{ color: "var(--ink-soft)" }}>{userEmail}</p>
-        </div>
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3.5 flex items-center justify-between">
+        <LogoLockup height={38} />
         <div className="flex items-center gap-3">
+          <div className="hidden sm:block text-right">
+            <p className="text-xs" style={{ color: "var(--ink)" }}>{householdName}</p>
+            <p className="text-[11px]" style={{ color: "var(--ink-soft)" }}>{userEmail}</p>
+          </div>
           <button
             onClick={copyInvite}
             title="Convidar alguém pra essa família"
