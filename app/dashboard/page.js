@@ -11,13 +11,15 @@ import { getMyHouseholdId, listAccounts } from "@/lib/data/accounts";
 import { listAllTransactions } from "@/lib/data/transactions";
 import { listDebts } from "@/lib/data/debts";
 import { getSettings, upsertSettings } from "@/lib/data/settings";
+import { listCustomCategories } from "@/lib/data/categories";
 import {
-  MONTH_NAMES, CATEGORIES, formatBRL, formatDatePt, toISODate, round2,
+  MONTH_NAMES, formatBRL, formatDatePt, toISODate, round2,
   accountsToMap, getEffectiveMonth, computeAccountBalance, computeCardInvoices,
   computeMonthlySeries, computeCategoryBreakdown, computeCardInvoiceHistory,
   computeDebtsAggregate, computeDebtStatus, prevMonthCursor,
   computeBudgetGroups, GROUP_ORDER, GROUP_LABELS, parseBRNumber,
   computeGoalMetrics, computeGoalProjection, computePreparationIndex, formatBucketLabel,
+  mergeCategories,
 } from "@/lib/finance/core";
 
 const DASH_VIEWS = [
@@ -45,6 +47,7 @@ export default function DashboardPage() {
   const [transactions, setTransactions] = useState([]);
   const [debts, setDebts] = useState([]);
   const [settings, setSettings] = useState(null);
+  const [customCategories, setCustomCategories] = useState([]);
   const [dashView, setDashView] = useState("visao");
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -57,16 +60,18 @@ export default function DashboardPage() {
       const hid = await getMyHouseholdId(supabase);
       setHouseholdId(hid);
       if (hid) {
-        const [accs, txs, dbts, sett] = await Promise.all([
+        const [accs, txs, dbts, sett, customCats] = await Promise.all([
           listAccounts(supabase, hid),
           listAllTransactions(supabase, hid),
           listDebts(supabase, hid),
           getSettings(supabase, hid),
+          listCustomCategories(supabase, hid),
         ]);
         setAccounts(accs);
         setTransactions(txs);
         setDebts(dbts);
         setSettings(sett);
+        setCustomCategories(customCats);
       }
       setLoading(false);
     })();
@@ -85,6 +90,7 @@ export default function DashboardPage() {
   }, [monthCursor]);
 
   const accountsMap = useMemo(() => accountsToMap(accounts), [accounts]);
+  const allCategories = useMemo(() => mergeCategories(customCategories), [customCategories]);
   const cards = useMemo(() => accounts.filter((a) => a.type === "cartao"), [accounts]);
 
   function computeTotalsFor(month) {
@@ -116,12 +122,12 @@ export default function DashboardPage() {
   const patrimonioLiquido = useMemo(() => round2(saldoTotalContas - dividaTotalRestante - faturaTotalAberta), [saldoTotalContas, dividaTotalRestante, faturaTotalAberta]);
 
   const monthlySeries = useMemo(() => computeMonthlySeries(transactions, accountsMap, monthCursor, 6), [transactions, accountsMap, monthCursor]);
-  const categoryBreakdown = useMemo(() => computeCategoryBreakdown(transactions, accountsMap, monthCursor), [transactions, accountsMap, monthCursor]);
-  const categoryBreakdownPrev = useMemo(() => computeCategoryBreakdown(transactions, accountsMap, prevMonthCursor(monthCursor)), [transactions, accountsMap, monthCursor]);
+  const categoryBreakdown = useMemo(() => computeCategoryBreakdown(transactions, accountsMap, monthCursor, allCategories), [transactions, accountsMap, monthCursor, allCategories]);
+  const categoryBreakdownPrev = useMemo(() => computeCategoryBreakdown(transactions, accountsMap, prevMonthCursor(monthCursor), allCategories), [transactions, accountsMap, monthCursor, allCategories]);
 
   const budgetGroups = useMemo(
-    () => (settings ? computeBudgetGroups(transactions, accountsMap, monthCursor, totals.receitas, settings) : []),
-    [transactions, accountsMap, monthCursor, totals.receitas, settings]
+    () => (settings ? computeBudgetGroups(transactions, accountsMap, monthCursor, totals.receitas, settings, allCategories) : []),
+    [transactions, accountsMap, monthCursor, totals.receitas, settings, allCategories]
   );
   const budgetPctSum = useMemo(() => {
     if (!settings) return 0;
@@ -275,7 +281,7 @@ export default function DashboardPage() {
             <CategoryDonutWithList rows={categoryBreakdown.rows} big />
           </ChartCard>
           <ChartCard title="Comparativo por categoria — este mês x mês anterior">
-            <CategoryComparisonChart current={categoryBreakdown.rows} previous={categoryBreakdownPrev.rows} />
+            <CategoryComparisonChart current={categoryBreakdown.rows} previous={categoryBreakdownPrev.rows} categories={allCategories} />
           </ChartCard>
         </>
       )}
@@ -660,8 +666,8 @@ function CategoryDonutWithList({ rows, big }) {
   );
 }
 
-function CategoryComparisonChart({ current, previous }) {
-  const merged = CATEGORIES.filter((c) => c.group !== "receita").map((c) => {
+function CategoryComparisonChart({ current, previous, categories }) {
+  const merged = categories.filter((c) => c.group !== "receita").map((c) => {
     const atual = current.find((r) => r.categoryId === c.id)?.total || 0;
     const anterior = previous.find((r) => r.categoryId === c.id)?.total || 0;
     return { name: c.name, atual, anterior };

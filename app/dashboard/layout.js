@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import DashboardHeader from "./dashboard-header";
+import DashboardSidebar from "./dashboard-sidebar";
+import DashboardTopbar from "./dashboard-topbar";
 
 export default async function DashboardLayout({ children }) {
   const supabase = await createClient();
@@ -19,13 +20,15 @@ export default async function DashboardLayout({ children }) {
   if (!membership) redirect("/onboarding");
 
   return (
-    <div className="min-h-screen" style={{ background: "var(--paper)" }}>
-      <DashboardHeader
-        userEmail={user.email}
-        householdName={membership.households?.name}
-        inviteCode={membership.households?.invite_code}
-      />
-      <main className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-10">{children}</main>
+    <div className="min-h-screen flex" style={{ background: "var(--paper)" }}>
+      <DashboardSidebar />
+      <div className="flex-1 min-w-0">
+        <DashboardTopbar
+          userEmail={user.email}
+          householdName={membership.households?.name}
+        />
+        <main className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-10">{children}</main>
+      </div>
     </div>
   );
 }

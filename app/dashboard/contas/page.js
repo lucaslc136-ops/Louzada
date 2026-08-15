@@ -58,7 +58,7 @@ export default function ContasPage() {
         ? { name: newAccountName.trim(), type: "cartao", limite: 1000, dia_fechamento: 25, dia_vencimento: 5 }
         : { name: newAccountName.trim(), type: "conta", saldo_inicial: 0 };
       const acc = await createAccount(supabase, householdId, fields);
-      setAccounts((prev) => [...prev, acc]);
+      setAccounts((prev) => (prev.some((a) => a.id === acc.id) ? prev : [...prev, acc]));
       setNewAccountName("");
       showToast("Conta adicionada.");
     } catch {

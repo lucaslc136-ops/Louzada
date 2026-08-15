@@ -3,15 +3,16 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Wand2, Plus, Trash2, Pencil, X, Check, ChevronLeft, ChevronRight,
-  Wallet, TrendingUp, TrendingDown, Scale, Receipt, SlidersHorizontal,
+  Wallet, TrendingUp, TrendingDown, Scale, Receipt, SlidersHorizontal, Download,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts, createAccount } from "@/lib/data/accounts";
 import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup } from "@/lib/data/transactions";
+import { listCustomCategories } from "@/lib/data/categories";
 import {
   CATEGORIES, PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
-  categoryById, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
-  getEffectiveMonth, accountsToMap, formatBucketLabel,
+  categoryById, mergeCategories, categoryByIdIn, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
+  getEffectiveMonth, accountsToMap, formatBucketLabel, transactionsToCSV, downloadCSV,
 } from "@/lib/finance/core";
 
 function emptyForm() {
@@ -30,6 +31,7 @@ export default function LancamentosPage() {
   const [loading, setLoading] = useState(true);
   const [householdId, setHouseholdId] = useState(null);
   const [accounts, setAccounts] = useState([]);
+  const [customCategories, setCustomCategories] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -75,8 +77,9 @@ export default function LancamentosPage() {
       const hid = await getMyHouseholdId(supabase);
       setHouseholdId(hid);
       if (hid) {
-        const [accs] = await Promise.all([listAccounts(supabase, hid)]);
+        const [accs, customCats] = await Promise.all([listAccounts(supabase, hid), listCustomCategories(supabase, hid)]);
         setAccounts(accs);
+        setCustomCategories(customCats);
         if (accs.length && !form.accountId) {
           setForm((f) => ({ ...f, accountId: accs[0].id }));
         }
@@ -104,6 +107,7 @@ export default function LancamentosPage() {
   }, [monthCursor]);
 
   const accountsMap = useMemo(() => accountsToMap(accounts), [accounts]);
+  const allCategories = useMemo(() => mergeCategories(customCategories), [customCategories]);
 
   // Lista: mostra o que foi comprado NESTE mês (data da compra), independente de cartão ou não.
   const monthTransactions = useMemo(
@@ -148,6 +152,16 @@ export default function LancamentosPage() {
     setCustomRangeTx(null);
   }
 
+  function handleExportCSV() {
+    if (filteredTransactions.length === 0) { showToast("Não há lançamentos pra exportar."); return; }
+    const csv = transactionsToCSV(filteredTransactions, accountsMap, allCategories);
+    const nomeArquivo = filtersActive
+      ? `lancamentos-filtrados-${toISODate(new Date())}.csv`
+      : `lancamentos-${monthCursor}.csv`;
+    downloadCSV(csv, nomeArquivo);
+    showToast(`${filteredTransactions.length} lançamento(s) exportado(s).`);
+  }
+
   // Totais: por padrão usam o mês de IMPACTO no fluxo de caixa — compra no cartão só conta no mês
   // em que a fatura vence, não no mês da compra. Mas quando algum filtro está ativo, os totais passam
   // a refletir exatamente a lista filtrada abaixo (senão os números do topo não bateriam com a tabela).
@@ -168,13 +182,13 @@ export default function LancamentosPage() {
   }, [transactions, accountsMap, monthCursor, monthTransactions, filtersActive, filteredTransactions]);
 
   const accountName = useCallback((id) => accounts.find((a) => a.id === id)?.name || "—", [accounts]);
-  const currentCategory = categoryById(form.categoryId) || CATEGORIES[0];
+  const currentCategory = categoryByIdIn(form.categoryId, allCategories) || allCategories[0];
 
   async function handleAddAccount() {
     if (!newAccountName.trim() || !householdId) return;
     try {
       const acc = await createAccount(supabase, householdId, { name: newAccountName.trim(), type: newAccountType });
-      setAccounts((prev) => [...prev, acc]);
+      setAccounts((prev) => (prev.some((a) => a.id === acc.id) ? prev : [...prev, acc]));
       if (!form.accountId) setForm((f) => ({ ...f, accountId: acc.id }));
       setNewAccountName("");
       showToast("Conta adicionada.");
@@ -338,13 +352,20 @@ export default function LancamentosPage() {
       )}
 
       {/* Filtros */}
-      <div>
+      <div className="flex gap-2">
         <button
           onClick={() => setShowFilters((s) => !s)}
           className="text-sm px-3.5 py-2 rounded-lg border bg-white flex items-center gap-1.5"
           style={{ borderColor: filtersActive ? "var(--brick)" : "var(--border)", color: filtersActive ? "var(--brick)" : "var(--ink)" }}
         >
           <SlidersHorizontal size={14} /> Filtros {filtersActive && "· ativos"}
+        </button>
+        <button
+          onClick={handleExportCSV}
+          className="text-sm px-3.5 py-2 rounded-lg border bg-white flex items-center gap-1.5"
+          style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+        >
+          <Download size={14} /> Exportar CSV
         </button>
       </div>
 
@@ -362,7 +383,7 @@ export default function LancamentosPage() {
               <select value={filterCategoryId} onChange={(e) => setFilterCategoryId(e.target.value)}
                 className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
                 <option value="">Todas</option>
-                {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {allCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </Field>
             <Field label="Tipo">
@@ -461,15 +482,15 @@ export default function LancamentosPage() {
               <span style={{ color: "var(--ink-soft)" }}>Categoria</span>
               <select
                 value={nlpPreview.categoryId}
-                onChange={(e) => { const cat = categoryById(e.target.value); setNlpPreview({ ...nlpPreview, categoryId: e.target.value, subcategory: cat.subcategories[0] }); }}
+                onChange={(e) => { const cat = categoryByIdIn(e.target.value, allCategories); setNlpPreview({ ...nlpPreview, categoryId: e.target.value, subcategory: cat.subcategories[0] }); }}
                 className="text-right bg-transparent"
               >
-                {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {allCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
 
               <span style={{ color: "var(--ink-soft)" }}>Subcategoria</span>
               <select value={nlpPreview.subcategory} onChange={(e) => setNlpPreview({ ...nlpPreview, subcategory: e.target.value })} className="text-right bg-transparent">
-                {(categoryById(nlpPreview.categoryId)?.subcategories || []).map((s) => <option key={s} value={s}>{s}</option>)}
+                {(categoryByIdIn(nlpPreview.categoryId, allCategories)?.subcategories || []).map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
 
               <span style={{ color: "var(--ink-soft)" }}>Conta</span>
@@ -528,10 +549,10 @@ export default function LancamentosPage() {
             <Field label="Categoria">
               <select
                 value={form.categoryId}
-                onChange={(e) => { const cat = categoryById(e.target.value); setForm((f) => ({ ...f, categoryId: e.target.value, subcategory: cat.subcategories[0] })); }}
+                onChange={(e) => { const cat = categoryByIdIn(e.target.value, allCategories); setForm((f) => ({ ...f, categoryId: e.target.value, subcategory: cat.subcategories[0] })); }}
                 className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}
               >
-                {CATEGORIES.filter((c) => (form.type === "receita" ? c.group === "receita" : c.group !== "receita")).map((c) => (
+                {allCategories.filter((c) => (form.type === "receita" ? c.group === "receita" : c.group !== "receita")).map((c) => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
@@ -622,7 +643,7 @@ export default function LancamentosPage() {
               </thead>
               <tbody>
                 {filteredTransactions.map((t) => {
-                  const cat = categoryById(t.category_id);
+                  const cat = categoryByIdIn(t.category_id, allCategories);
                   const isEditingCat = editingCategoryRowId === t.id;
                   const effMonth = getEffectiveMonth(t, accountsMap);
                   const shifted = effMonth !== t.date.slice(0, 7);
@@ -634,10 +655,10 @@ export default function LancamentosPage() {
                           <div className="flex gap-1">
                             <select
                               value={t.category_id}
-                              onChange={(e) => { const c = categoryById(e.target.value); updateCategoryInline(t, e.target.value, c.subcategories[0]); }}
+                              onChange={(e) => { const c = categoryByIdIn(e.target.value, allCategories); updateCategoryInline(t, e.target.value, c.subcategories[0]); }}
                               className="text-xs px-1.5 py-1 rounded border" style={{ borderColor: "var(--border)" }}
                             >
-                              {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                              {allCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                             </select>
                             <button onClick={() => setEditingCategoryRowId(null)} className="text-slate-400"><X size={13} /></button>
                           </div>
