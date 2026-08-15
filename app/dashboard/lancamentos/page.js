@@ -2,12 +2,12 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
-  Wand2, Plus, Trash2, Pencil, X, Check, ChevronLeft, ChevronRight,
+  Wand2, Plus, Trash2, Pencil, X, Check, ChevronLeft, ChevronRight, AlertTriangle,
   Wallet, TrendingUp, TrendingDown, Scale, Receipt, SlidersHorizontal, Download,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts, createAccount } from "@/lib/data/accounts";
-import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup } from "@/lib/data/transactions";
+import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup, deleteTransactionsByIds } from "@/lib/data/transactions";
 import { listCustomCategories } from "@/lib/data/categories";
 import {
   CATEGORIES, PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
@@ -39,6 +39,9 @@ export default function LancamentosPage() {
   });
 
   const [showFilters, setShowFilters] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [filterAccountId, setFilterAccountId] = useState("");
   const [filterCategoryId, setFilterCategoryId] = useState("");
   const [filterType, setFilterType] = useState("");
@@ -129,6 +132,12 @@ export default function LancamentosPage() {
   }, [baseTransactions, filterAccountId, filterCategoryId, filterType]);
 
   const filtersActive = !!(filterAccountId || filterCategoryId || filterType || customRangeTx !== null);
+
+  // limpa a seleção sempre que a lista visível muda (mês, filtro etc.) — evita ficar com itens
+  // "selecionados" que já nem aparecem mais na tela.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [monthCursor, filterAccountId, filterCategoryId, filterType, customRangeTx]);
 
   async function applyCustomRange() {
     if (!filterFrom || !filterTo) { showToast("Preencha as duas datas do período."); return; }
@@ -242,6 +251,48 @@ export default function LancamentosPage() {
     });
     setEditingId(tx.id);
     setShowManualForm(true);
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((prev) =>
+      prev.size === filteredTransactions.length ? new Set() : new Set(filteredTransactions.map((t) => t.id))
+    );
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
+
+  const selectedTotal = useMemo(() => {
+    let receitas = 0, despesas = 0;
+    for (const t of filteredTransactions) {
+      if (!selectedIds.has(t.id)) continue;
+      if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);
+    }
+    return { receitas: round2(receitas), despesas: round2(despesas) };
+  }, [filteredTransactions, selectedIds]);
+
+  async function handleBulkDelete() {
+    setBulkDeleting(true);
+    try {
+      await deleteTransactionsByIds(supabase, Array.from(selectedIds));
+      showToast(`${selectedIds.size} lançamento(s) excluído(s).`);
+      clearSelection();
+      setShowBulkDeleteConfirm(false);
+      await reloadTransactions(householdId, monthCursor);
+    } catch {
+      showToast("Não consegui excluir os lançamentos selecionados.");
+    } finally {
+      setBulkDeleting(false);
+    }
   }
 
   async function handleDelete(tx) {
@@ -624,6 +675,22 @@ export default function LancamentosPage() {
         <h2 className="font-serif text-lg mb-3">
           {filtersActive ? "Lançamentos filtrados" : `Lançamentos de ${monthLabel.toLowerCase()}`}
         </h2>
+
+        {selectedIds.size > 0 && (
+          <div className="flex items-center justify-between gap-3 rounded-lg px-3.5 py-2.5 mb-2" style={{ background: "#fdf1ed" }}>
+            <span className="text-xs" style={{ color: "var(--brick)" }}>{selectedIds.size} selecionado(s)</span>
+            <div className="flex items-center gap-3">
+              <button onClick={clearSelection} className="text-xs underline" style={{ color: "var(--ink-soft)" }}>Cancelar seleção</button>
+              <button
+                onClick={() => setShowBulkDeleteConfirm(true)}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg text-white" style={{ background: "var(--rose)" }}
+              >
+                <Trash2 size={12} /> Excluir selecionados
+              </button>
+            </div>
+          </div>
+        )}
+
         {filteredTransactions.length === 0 ? (
           <div className="text-sm rounded-xl border border-dashed p-8 text-center" style={{ borderColor: "var(--border)", color: "var(--ink-soft)" }}>
             {filtersActive ? "Nenhum lançamento encontrado com esses filtros." : "Nenhum lançamento neste mês ainda."}
@@ -633,6 +700,14 @@ export default function LancamentosPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-[11px] uppercase tracking-wide" style={{ color: "var(--ink-soft)", background: "var(--paper)" }}>
+                  <th className="pl-4 pr-2 py-2.5 font-medium w-8">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.size > 0 && selectedIds.size === filteredTransactions.length}
+                      onChange={toggleSelectAll}
+                      title="Selecionar todos"
+                    />
+                  </th>
                   <th className="px-4 py-2.5 font-medium">Data</th>
                   <th className="px-4 py-2.5 font-medium">Categoria</th>
                   <th className="px-4 py-2.5 font-medium hidden sm:table-cell">Conta</th>
@@ -648,7 +723,10 @@ export default function LancamentosPage() {
                   const effMonth = getEffectiveMonth(t, accountsMap);
                   const shifted = effMonth !== t.date.slice(0, 7);
                   return (
-                    <tr key={t.id} className="border-t" style={{ borderColor: "var(--border)" }}>
+                    <tr key={t.id} className="border-t" style={{ borderColor: "var(--border)", background: selectedIds.has(t.id) ? "#fdf1ed" : "transparent" }}>
+                      <td className="pl-4 pr-2 py-2.5">
+                        <input type="checkbox" checked={selectedIds.has(t.id)} onChange={() => toggleSelect(t.id)} />
+                      </td>
                       <td className="px-4 py-2.5 tabular whitespace-nowrap">{formatDatePt(t.date)}</td>
                       <td className="px-4 py-2.5">
                         {isEditingCat ? (
@@ -695,6 +773,33 @@ export default function LancamentosPage() {
           </div>
         )}
       </section>
+
+      {showBulkDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(20,32,46,0.5)" }}>
+          <div className="bg-white rounded-xl p-5 max-w-sm w-full">
+            <p className="text-sm font-medium flex items-center gap-1.5 mb-3" style={{ color: "var(--rose)" }}>
+              <AlertTriangle size={16} /> Confirmar exclusão
+            </p>
+            <p className="text-sm mb-1" style={{ color: "var(--ink)" }}>
+              Isso vai apagar {selectedIds.size} lançamento(s) selecionado(s):
+            </p>
+            <p className="text-xs mb-1" style={{ color: "var(--teal)" }}>Receitas: {formatBRL(selectedTotal.receitas)}</p>
+            <p className="text-xs mb-3" style={{ color: "var(--rose)" }}>Despesas: {formatBRL(selectedTotal.despesas)}</p>
+            <p className="text-xs mb-4" style={{ color: "var(--ink-soft)" }}>Essa ação não pode ser desfeita.</p>
+            <div className="flex gap-2">
+              <button onClick={() => setShowBulkDeleteConfirm(false)} className="flex-1 text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
+                Cancelar
+              </button>
+              <button
+                onClick={handleBulkDelete} disabled={bulkDeleting}
+                className="flex-1 text-sm px-3 py-2 rounded-lg text-white disabled:opacity-50" style={{ background: "var(--rose)" }}
+              >
+                {bulkDeleting ? "Excluindo…" : "Sim, excluir"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 text-xs px-4 py-2.5 rounded-full text-white shadow-lg z-50" style={{ background: "var(--ink)" }}>
