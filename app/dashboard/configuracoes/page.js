@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { User, Mail, KeyRound, LogOut, Check, Users, Copy, Tag, Plus, Trash2 } from "lucide-react";
+import { User, Mail, KeyRound, LogOut, Check, Users, Copy, Tag, Plus, Trash2, Landmark } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { listCustomCategories, createCustomCategory, deleteCustomCategory } from "@/lib/data/categories";
 import { GROUP_LABELS, GROUP_ORDER } from "@/lib/finance/core";
@@ -26,6 +26,10 @@ export default function ConfiguracoesPage() {
   const [newCatGroup, setNewCatGroup] = useState("necessidades");
   const [newCatSubs, setNewCatSubs] = useState("");
   const [savingCategory, setSavingCategory] = useState(false);
+
+  const [pluggyItemId, setPluggyItemId] = useState("");
+  const [testingPluggy, setTestingPluggy] = useState(false);
+  const [pluggyResult, setPluggyResult] = useState(null);
 
   const [novaSenha, setNovaSenha] = useState("");
   const [confirmarSenha, setConfirmarSenha] = useState("");
@@ -86,6 +90,21 @@ export default function ConfiguracoesPage() {
       showToast("Não consegui atualizar o nome.");
     } finally {
       setSavingName(false);
+    }
+  }
+
+  async function handleTestPluggyConnection() {
+    if (!pluggyItemId.trim()) { showToast("Cole o ID da conexão primeiro."); return; }
+    setTestingPluggy(true);
+    setPluggyResult(null);
+    try {
+      const res = await fetch(`/api/pluggy/test-connection?itemId=${encodeURIComponent(pluggyItemId.trim())}`);
+      const data = await res.json();
+      setPluggyResult(data);
+    } catch {
+      setPluggyResult({ error: "Não consegui falar com o servidor." });
+    } finally {
+      setTestingPluggy(false);
     }
   }
 
@@ -218,6 +237,40 @@ export default function ConfiguracoesPage() {
             <Plus size={13} /> {savingCategory ? "Criando…" : "Adicionar categoria"}
           </button>
         </form>
+      </div>
+
+      <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+        <p className="text-sm font-medium flex items-center gap-1.5 mb-1" style={{ color: "var(--ink)" }}><Landmark size={15} /> Conectar banco (teste)</p>
+        <p className="text-xs mb-3" style={{ color: "var(--ink-soft)" }}>
+          Cole o ID de uma conexão do seu Dashboard da Pluggy pra testar se está tudo certo — isso só consulta os dados, não importa nada ainda.
+        </p>
+        <div className="flex gap-2 mb-3">
+          <input
+            value={pluggyItemId} onChange={(e) => setPluggyItemId(e.target.value)}
+            placeholder="ID da conexão (ex: a0922d6f-2007-...)"
+            className="flex-1 text-sm px-3 py-2 rounded-lg border font-mono" style={{ borderColor: "var(--border)" }}
+          />
+          <button
+            onClick={handleTestPluggyConnection} disabled={testingPluggy}
+            className="text-sm px-3.5 py-2 rounded-lg text-white disabled:opacity-60 shrink-0" style={{ background: "var(--ink)" }}
+          >
+            {testingPluggy ? "Testando…" : "Testar conexão"}
+          </button>
+        </div>
+        {pluggyResult && pluggyResult.error && (
+          <p className="text-xs rounded-lg px-3 py-2" style={{ background: "#fdf1ef", color: "var(--rose)" }}>{pluggyResult.error}</p>
+        )}
+        {pluggyResult && !pluggyResult.error && (
+          <div className="space-y-1.5">
+            <p className="text-xs" style={{ color: "var(--teal)" }}>Conectado: {pluggyResult.conector} (status: {pluggyResult.status})</p>
+            {pluggyResult.contas.map((c) => (
+              <div key={c.pluggyAccountId} className="text-xs rounded-lg px-3 py-2 flex justify-between" style={{ background: "var(--paper)" }}>
+                <span>{c.name} <span style={{ color: "var(--ink-soft)" }}>({c.tipoSugerido})</span></span>
+                <span className="font-mono">{c.saldo != null ? `R$ ${c.saldo.toFixed(2)}` : "—"}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <form onSubmit={handleChangePassword} className="rounded-xl border bg-white p-4 space-y-3" style={{ borderColor: "var(--border)" }}>
