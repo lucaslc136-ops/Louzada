@@ -208,11 +208,13 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      <div className="flex items-center justify-center gap-4">
-        <button onClick={() => shiftMonth(-1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronLeft size={16} /></button>
-        <span className="text-sm font-medium tabular w-40 text-center">{monthLabel}</span>
-        <button onClick={() => shiftMonth(1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronRight size={16} /></button>
-      </div>
+      {dashView !== "assinaturas" && (
+        <div className="flex items-center justify-center gap-4">
+          <button onClick={() => shiftMonth(-1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronLeft size={16} /></button>
+          <span className="text-sm font-medium tabular w-40 text-center">{monthLabel}</span>
+          <button onClick={() => shiftMonth(1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronRight size={16} /></button>
+        </div>
+      )}
 
       {dashView === "visao" && (
         <>
@@ -436,6 +438,9 @@ export default function DashboardPage() {
           <EmptyDashState text="Ainda não detectamos nenhuma cobrança recorrente no seu histórico. Precisa de pelo menos 2 cobranças parecidas, com cerca de 30 dias de intervalo, pra aparecer aqui." />
         ) : (
           <>
+            <p className="text-xs -mt-2" style={{ color: "var(--ink-soft)" }}>
+              Baseado no histórico completo, não no mês selecionado — assinatura é algo contínuo, não muda de mês pra mês.
+            </p>
             <KpiCard icon={<Wallet size={15} />} label="Total mensal em assinaturas" value={formatBRL(totalAssinaturas)} color="var(--brick)" />
             <div className="space-y-2">
               {recorrentes.map((r) => (
