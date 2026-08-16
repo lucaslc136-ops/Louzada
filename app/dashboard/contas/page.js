@@ -9,7 +9,7 @@ import { listDebts } from "@/lib/data/debts";
 import { listCustomCategories } from "@/lib/data/categories";
 import {
   computeAccountBalance, computeCardInvoices, formatBucketLabel, formatBRL, parseBRNumber, toISODate,
-  mergeCategories,
+  mergeCategories, round2,
 } from "@/lib/finance/core";
 
 export default function ContasPage() {
@@ -329,6 +329,16 @@ export default function ContasPage() {
                 <span style={{ color: "var(--ink-soft)" }}>Saldo atual</span>
                 <span className="font-mono tabular font-medium" style={{ color: saldo >= 0 ? "var(--teal)" : "var(--rose)" }}>{formatBRL(saldo)}</span>
               </div>
+              {a.pluggy_balance != null && (() => {
+                const diferenca = round2(saldo - Number(a.pluggy_balance));
+                const divergente = Math.abs(diferenca) >= 1;
+                return (
+                  <div className="flex justify-between text-[11px] mt-1" style={{ color: divergente ? "var(--rose)" : "var(--ink-soft)" }}>
+                    <span>Saldo real do banco{divergente ? " ⚠" : ""}</span>
+                    <span className="font-mono tabular">{formatBRL(a.pluggy_balance)}</span>
+                  </div>
+                );
+              })()}
             </div>
           );
         })}

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { getPluggyApiKey, fetchPluggyTransactions } from "@/lib/pluggy/client";
+import { getPluggyApiKey, fetchPluggyTransactions, fetchPluggyAccountById } from "@/lib/pluggy/client";
 import { mapPluggyTransactionToDraft, filterNewPluggyTransactions, findPossibleDuplicate } from "@/lib/finance/core";
 
 // GET /api/cron/sync-banks — chamado uma vez por dia pela Vercel (vercel.json). Só a própria
@@ -21,7 +21,7 @@ export async function GET(request) {
 
   const { data: contasVinculadas, error: contasError } = await supabase
     .from("accounts")
-    .select("id, household_id, name, pluggy_account_id")
+    .select("id, household_id, name, type, pluggy_account_id")
     .not("pluggy_account_id", "is", null);
   if (contasError) {
     return NextResponse.json({ error: contasError.message }, { status: 500 });
@@ -83,6 +83,19 @@ export async function GET(request) {
       await supabase.from("bank_connections")
         .update({ last_synced_at: new Date().toISOString() })
         .eq("household_id", conta.household_id);
+
+      // atualiza o saldo real do banco pra reconciliação (só "conta" — cartão tem semântica
+      // de fatura, não saldo corrente, e mereceria um tratamento próprio).
+      if (conta.type === "conta") {
+        try {
+          const pluggyAccount = await fetchPluggyAccountById(apiKey, conta.pluggy_account_id);
+          await supabase.from("accounts")
+            .update({ pluggy_balance: pluggyAccount.balance, pluggy_balance_updated_at: new Date().toISOString() })
+            .eq("id", conta.id);
+        } catch {
+          // não bloqueia a sincronização se só a atualização do saldo falhar
+        }
+      }
 
       resultado.contasProcessadas++;
     } catch (err) {

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
-import { Bell, CreditCard, PiggyBank, Gauge, AlertTriangle, RefreshCw } from "lucide-react";
+import { Bell, CreditCard, PiggyBank, Gauge, AlertTriangle, RefreshCw, Scale } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts } from "@/lib/data/accounts";
 import { listAllTransactions } from "@/lib/data/transactions";
@@ -10,7 +10,7 @@ import { listDebts } from "@/lib/data/debts";
 import { getSettings } from "@/lib/data/settings";
 import { computeAlerts, toISODate } from "@/lib/finance/core";
 
-const ICON_BY_TYPE = { fatura: CreditCard, orcamento: Gauge, divida: PiggyBank, revisao: RefreshCw };
+const ICON_BY_TYPE = { fatura: CreditCard, orcamento: Gauge, divida: PiggyBank, revisao: RefreshCw, reconciliacao: Scale };
 const SEEN_KEY_PREFIX = "louzada_alerts_seen_";
 
 // Guarda, no navegador, quais alertas (pela assinatura) a pessoa já abriu o sino e viu. Cada
