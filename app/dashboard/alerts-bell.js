@@ -11,10 +11,30 @@ import { getSettings } from "@/lib/data/settings";
 import { computeAlerts, toISODate } from "@/lib/finance/core";
 
 const ICON_BY_TYPE = { fatura: CreditCard, orcamento: Gauge, divida: PiggyBank, revisao: RefreshCw };
+const SEEN_KEY_PREFIX = "louzada_alerts_seen_";
+
+// Guarda, no navegador, quais alertas (pela assinatura) a pessoa já abriu o sino e viu. Cada
+// alerta muda de assinatura quando o que ele representa muda de verdade (ex: um lançamento a
+// mais precisando de revisão) — então "já visto" não esconde coisa nova.
+function loadSeen(householdId) {
+  if (typeof window === "undefined" || !householdId) return new Set();
+  try {
+    return new Set(JSON.parse(localStorage.getItem(SEEN_KEY_PREFIX + householdId) || "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveSeen(householdId, signatures) {
+  if (typeof window === "undefined" || !householdId) return;
+  localStorage.setItem(SEEN_KEY_PREFIX + householdId, JSON.stringify([...signatures]));
+}
 
 export default function AlertsBell() {
   const supabase = createClient();
   const [alerts, setAlerts] = useState([]);
+  const [householdId, setHouseholdId] = useState(null);
+  const [seenSignatures, setSeenSignatures] = useState(new Set());
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -22,6 +42,8 @@ export default function AlertsBell() {
     (async () => {
       const hid = await getMyHouseholdId(supabase);
       if (!hid) return;
+      setHouseholdId(hid);
+      setSeenSignatures(loadSeen(hid));
       const [accounts, transactions, debts, settings] = await Promise.all([
         listAccounts(supabase, hid),
         listAllTransactions(supabase, hid),
@@ -41,23 +63,37 @@ export default function AlertsBell() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const temAlertaAlto = alerts.some((a) => a.severidade === "alta");
+  const naoVistos = alerts.filter((a) => !seenSignatures.has(a.signature));
+  const temAlertaAltoNaoVisto = naoVistos.some((a) => a.severidade === "alta");
+
+  function handleToggleOpen() {
+    setOpen((v) => {
+      const abrindo = !v;
+      if (abrindo && alerts.length > 0 && householdId) {
+        const novoSet = new Set(seenSignatures);
+        alerts.forEach((a) => novoSet.add(a.signature));
+        setSeenSignatures(novoSet);
+        saveSeen(householdId, novoSet);
+      }
+      return abrindo;
+    });
+  }
 
   return (
     <div className="relative" ref={ref}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={handleToggleOpen}
         className="relative w-9 h-9 rounded-lg flex items-center justify-center"
         style={{ color: "var(--ink-soft)" }}
         title="Alertas"
       >
         <Bell size={17} />
-        {alerts.length > 0 && (
+        {naoVistos.length > 0 && (
           <span
             className="absolute top-1 right-1 min-w-[15px] h-[15px] px-0.5 rounded-full text-[9px] text-white flex items-center justify-center font-medium"
-            style={{ background: temAlertaAlto ? "var(--rose)" : "var(--amber)" }}
+            style={{ background: temAlertaAltoNaoVisto ? "var(--rose)" : "var(--amber)" }}
           >
-            {alerts.length}
+            {naoVistos.length}
           </span>
         )}
       </button>

@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import {
   Wand2, Plus, Trash2, Pencil, X, Check, ChevronLeft, ChevronRight, AlertTriangle, RefreshCw,
   Wallet, TrendingUp, TrendingDown, Scale, Receipt, SlidersHorizontal, Download,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts, createAccount } from "@/lib/data/accounts";
-import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup, deleteTransactionsByIds } from "@/lib/data/transactions";
+import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup, deleteTransactionsByIds, listTransactionsByIds } from "@/lib/data/transactions";
 import { listCustomCategories } from "@/lib/data/categories";
 import {
   PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
@@ -48,6 +49,10 @@ export default function LancamentosPage() {
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
   const [customRangeTx, setCustomRangeTx] = useState(null); // preenchido só quando o período personalizado está ativo
+  const [reviewMode, setReviewMode] = useState(false); // true quando veio do alerta "aguardando revisão"
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const [rangeLoading, setRangeLoading] = useState(false);
 
   const [nlpText, setNlpText] = useState("");
@@ -92,6 +97,23 @@ export default function LancamentosPage() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Se a pessoa clicou num alerta "aguardando revisão" no sino, a URL vem com ?review=id1,id2 —
+  // busca exatamente esses lançamentos (de qualquer mês) e mostra só eles, em vez do mês atual.
+  useEffect(() => {
+    if (!householdId) return;
+    const reviewParam = searchParams.get("review");
+    if (!reviewParam) return;
+    const ids = reviewParam.split(",").filter(Boolean);
+    if (ids.length === 0) return;
+    (async () => {
+      const rows = await listTransactionsByIds(supabase, householdId, ids);
+      setCustomRangeTx(rows);
+      setReviewMode(true);
+      router.replace(pathname); // limpa o parâmetro pra não "prender" nesse modo num refresh futuro
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [householdId]);
 
   useEffect(() => {
     if (householdId) reloadTransactions(householdId, monthCursor);
@@ -159,6 +181,7 @@ export default function LancamentosPage() {
     setFilterFrom("");
     setFilterTo("");
     setCustomRangeTx(null);
+    setReviewMode(false);
   }
 
   function handleExportCSV() {
@@ -390,12 +413,18 @@ export default function LancamentosPage() {
         </div>
       )}
 
-      {/* Navegador de mês (esconde quando um período personalizado está ativo) */}
+      {/* Navegador de mês (esconde quando um período personalizado ou o modo revisão está ativo) */}
       {customRangeTx === null ? (
         <div className="flex items-center justify-center gap-4">
           <button onClick={() => shiftMonth(-1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronLeft size={18} /></button>
           <span className="text-sm font-medium tabular w-40 text-center">{monthLabel}</span>
           <button onClick={() => shiftMonth(1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronRight size={18} /></button>
+        </div>
+      ) : reviewMode ? (
+        <div className="flex items-center justify-center gap-2 text-sm rounded-lg px-3 py-2" style={{ background: "#faf1e6" }}>
+          <RefreshCw size={14} style={{ color: "var(--amber)" }} />
+          <span style={{ color: "var(--amber)" }}>Mostrando {customRangeTx.length} lançamento(s) aguardando revisão</span>
+          <button onClick={clearAllFilters} className="text-xs underline" style={{ color: "var(--brick)" }}>voltar pro mês</button>
         </div>
       ) : (
         <div className="flex items-center justify-center gap-2 text-sm">
