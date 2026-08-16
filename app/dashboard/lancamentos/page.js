@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from "react";
 import {
-  Wand2, Plus, Trash2, Pencil, X, Check, ChevronLeft, ChevronRight, AlertTriangle,
+  Wand2, Plus, Trash2, Pencil, X, Check, ChevronLeft, ChevronRight, AlertTriangle, RefreshCw,
   Wallet, TrendingUp, TrendingDown, Scale, Receipt, SlidersHorizontal, Download,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
@@ -317,7 +317,9 @@ export default function LancamentosPage() {
   }
 
   async function updateCategoryInline(tx, categoryId, subcategory) {
-    await updateTransaction(supabase, tx.id, { category_id: categoryId, subcategory });
+    const patch = { category_id: categoryId, subcategory };
+    if (tx.needs_review) patch.needs_review = false; // ao revisar a categoria, considera confirmado
+    await updateTransaction(supabase, tx.id, patch);
     await reloadTransactions(householdId, monthCursor);
     setEditingCategoryRowId(null);
   }
@@ -752,6 +754,16 @@ export default function LancamentosPage() {
                         )}
                         {shifted && (
                           <div className="text-[10px] mt-0.5" style={{ color: "var(--brick)" }}>→ fatura de {formatBucketLabel(effMonth).toLowerCase()}</div>
+                        )}
+                        {t.needs_review && (
+                          <div className="text-[10px] mt-0.5 flex items-center gap-1" style={{ color: "var(--amber)" }}>
+                            <RefreshCw size={9} /> Confirme a categoria
+                          </div>
+                        )}
+                        {t.possible_duplicate_of && (
+                          <div className="text-[10px] mt-0.5 flex items-center gap-1" style={{ color: "var(--rose)" }}>
+                            <AlertTriangle size={9} /> Pode ser duplicata
+                          </div>
                         )}
                       </td>
                       <td className="px-4 py-2.5 hidden sm:table-cell">{accountName(t.account_id)}</td>

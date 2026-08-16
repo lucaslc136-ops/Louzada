@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getAuthedHousehold } from "@/lib/pluggy/auth-helper";
 import { getPluggyApiKey, fetchPluggyTransactions } from "@/lib/pluggy/client";
-import { mapPluggyTransactionToDraft, filterNewPluggyTransactions } from "@/lib/finance/core";
+import { mapPluggyTransactionToDraft, filterNewPluggyTransactions, findPossibleDuplicate } from "@/lib/finance/core";
 
 // POST /api/pluggy/sync-preview — busca transações novas da conta vinculada, SEM salvar nada
 // ainda. Devolve uma lista pra pessoa revisar/ajustar categoria antes de confirmar.
@@ -48,6 +48,20 @@ export async function POST(request) {
     const existingIds = existing.map((t) => t.external_id);
     const novas = filterNewPluggyTransactions(pluggyTxs, existingIds);
     const drafts = novas.map((t) => mapPluggyTransactionToDraft(t, accountId));
+
+    // pra detectar duplicata, olha os lançamentos digitados à mão (sem external_id) da mesma
+    // conta, num período um pouco mais largo que a janela de comparação (3 dias pra cada lado).
+    const { data: manuais, error: manuaisError } = await supabase
+      .from("transactions")
+      .select("id, account_id, type, value, date, note")
+      .eq("household_id", householdId)
+      .eq("account_id", accountId)
+      .is("external_id", null);
+    if (manuaisError) throw manuaisError;
+
+    for (const d of drafts) {
+      d.possibleDuplicate = findPossibleDuplicate(d, manuais);
+    }
 
     return NextResponse.json({ accountName: account.name, total: pluggyTxs.length, novas: drafts.length, drafts });
   } catch (err) {

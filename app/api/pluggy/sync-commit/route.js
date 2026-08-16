@@ -26,6 +26,7 @@ export async function POST(request) {
     note: d.note || "",
     external_id: d.externalId,
     source: "pluggy",
+    possible_duplicate_of: d.possibleDuplicate?.id || null,
   }));
 
   try {

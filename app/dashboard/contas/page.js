@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { Plus, Trash2, Wallet, CreditCard, Link2, RefreshCw, Check, X } from "lucide-react";
+import { Plus, Trash2, Wallet, CreditCard, Link2, RefreshCw, Check, X, AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts, createAccount, updateAccount, deleteAccount } from "@/lib/data/accounts";
 import { listAllTransactions } from "@/lib/data/transactions";
@@ -406,26 +406,38 @@ export default function ContasPage() {
           </p>
           <div className="space-y-2 max-h-96 overflow-y-auto mb-3">
             {syncReview.drafts.map((d, i) => (
-              <div key={d.externalId} className="flex items-center gap-2 text-xs rounded-lg p-2" style={{ background: "var(--paper)" }}>
-                <span className="w-16 shrink-0" style={{ color: "var(--ink-soft)" }}>{d.date.split("-").reverse().join("/")}</span>
-                <span className="flex-1 truncate" title={d.note}>{d.note || "—"}</span>
-                <select
-                  value={d.categoryId}
-                  onChange={(e) => {
-                    const cat = CATEGORIES.find((c) => c.id === e.target.value);
-                    updateSyncDraft(i, "categoryId", e.target.value);
-                    updateSyncDraft(i, "subcategory", cat?.subcategories[0] || "");
-                  }}
-                  className="text-xs px-1.5 py-1 rounded border" style={{ borderColor: "var(--border)" }}
-                >
-                  {CATEGORIES.filter((c) => (d.type === "receita" ? c.group === "receita" : c.group !== "receita")).map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </select>
-                <span className="w-20 text-right font-mono tabular shrink-0" style={{ color: d.type === "receita" ? "var(--teal)" : "var(--rose)" }}>
-                  {formatBRL(d.value)}
-                </span>
-                <button onClick={() => removeSyncDraft(i)} className="text-slate-400 hover:text-rose-600 shrink-0"><X size={13} /></button>
+              <div
+                key={d.externalId}
+                className="rounded-lg p-2"
+                style={{ background: d.possibleDuplicate ? "#faf1e6" : "var(--paper)", border: d.possibleDuplicate ? "1px solid #f0d9b5" : "none" }}
+              >
+                {d.possibleDuplicate && (
+                  <p className="text-[11px] flex items-center gap-1 mb-1.5" style={{ color: "var(--amber)" }}>
+                    <AlertTriangle size={11} className="shrink-0" />
+                    Parece com "{d.possibleDuplicate.note || "um lançamento"}" que você já tem em {d.possibleDuplicate.date.split("-").reverse().join("/")} — confira se não é a mesma coisa.
+                  </p>
+                )}
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="w-16 shrink-0" style={{ color: "var(--ink-soft)" }}>{d.date.split("-").reverse().join("/")}</span>
+                  <span className="flex-1 truncate" title={d.note}>{d.note || "—"}</span>
+                  <select
+                    value={d.categoryId}
+                    onChange={(e) => {
+                      const cat = CATEGORIES.find((c) => c.id === e.target.value);
+                      updateSyncDraft(i, "categoryId", e.target.value);
+                      updateSyncDraft(i, "subcategory", cat?.subcategories[0] || "");
+                    }}
+                    className="text-xs px-1.5 py-1 rounded border" style={{ borderColor: "var(--border)" }}
+                  >
+                    {CATEGORIES.filter((c) => (d.type === "receita" ? c.group === "receita" : c.group !== "receita")).map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                  <span className="w-20 text-right font-mono tabular shrink-0" style={{ color: d.type === "receita" ? "var(--teal)" : "var(--rose)" }}>
+                    {formatBRL(d.value)}
+                  </span>
+                  <button onClick={() => removeSyncDraft(i)} className="text-slate-400 hover:text-rose-600 shrink-0" title="Não importar esse"><X size={13} /></button>
+                </div>
               </div>
             ))}
             {syncReview.drafts.length === 0 && <p className="text-xs text-center py-4" style={{ color: "var(--ink-soft)" }}>Nada pra importar.</p>}
