@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ResponsiveContainer, BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine,
@@ -13,7 +14,7 @@ import { listDebts } from "@/lib/data/debts";
 import { getSettings, upsertSettings } from "@/lib/data/settings";
 import { listCustomCategories } from "@/lib/data/categories";
 import {
-  MONTH_NAMES, formatBRL, formatDatePt, toISODate, round2,
+  MONTH_NAMES, formatBRL, formatDatePt, toISODate, round2, detectRecurringCharges,
   accountsToMap, getEffectiveMonth, computeAccountBalance, computeCardInvoices,
   computeMonthlySeries, computeCategoryBreakdown, computeCardInvoiceHistory,
   computeDebtsAggregate, computeDebtStatus, prevMonthCursor,
@@ -29,6 +30,7 @@ const DASH_VIEWS = [
   { id: "orcamento", label: "Orçamento 50/30/20" },
   { id: "cartoes", label: "Cartões" },
   { id: "dividas", label: "Dívidas" },
+  { id: "assinaturas", label: "Assinaturas" },
   { id: "imovel", label: "Primeiro Imóvel" },
   { id: "patrimonio", label: "Patrimônio" },
 ];
@@ -48,7 +50,8 @@ export default function DashboardPage() {
   const [debts, setDebts] = useState([]);
   const [settings, setSettings] = useState(null);
   const [customCategories, setCustomCategories] = useState([]);
-  const [dashView, setDashView] = useState("visao");
+  const searchParams = useSearchParams();
+  const [dashView, setDashView] = useState(() => searchParams.get("view") || "visao");
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
@@ -90,6 +93,8 @@ export default function DashboardPage() {
   }, [monthCursor]);
 
   const accountsMap = useMemo(() => accountsToMap(accounts), [accounts]);
+  const recorrentes = useMemo(() => detectRecurringCharges(transactions), [transactions]);
+  const totalAssinaturas = useMemo(() => round2(recorrentes.reduce((s, r) => s + r.valorAtual, 0)), [recorrentes]);
   const allCategories = useMemo(() => mergeCategories(customCategories), [customCategories]);
   const cards = useMemo(() => accounts.filter((a) => a.type === "cartao"), [accounts]);
 
@@ -422,6 +427,39 @@ export default function DashboardPage() {
                 </BarChart>
               </ResponsiveContainer>
             </ChartCard>
+          </>
+        )
+      )}
+
+      {dashView === "assinaturas" && (
+        recorrentes.length === 0 ? (
+          <EmptyDashState text="Ainda não detectamos nenhuma cobrança recorrente no seu histórico. Precisa de pelo menos 2 cobranças parecidas, com cerca de 30 dias de intervalo, pra aparecer aqui." />
+        ) : (
+          <>
+            <KpiCard icon={<Wallet size={15} />} label="Total mensal em assinaturas" value={formatBRL(totalAssinaturas)} color="var(--brick)" />
+            <div className="space-y-2">
+              {recorrentes.map((r) => (
+                <div key={r.chave} className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium" style={{ color: "var(--ink)" }}>{r.descricao}</p>
+                      <p className="text-xs mt-0.5" style={{ color: "var(--ink-soft)" }}>
+                        {accountsMap[r.accountId]?.name || "—"} · {r.ocorrencias}x detectado{r.ocorrencias > 1 ? "as" : ""} · próxima cobrança estimada em {formatDatePt(r.proximaDataEstimada)}
+                      </p>
+                      {r.valorMudou && (
+                        <p className="text-xs mt-1 font-medium" style={{ color: "var(--rose)" }}>
+                          Valor mudou: {formatBRL(r.valorAnterior)} → {formatBRL(r.valorAtual)}
+                        </p>
+                      )}
+                    </div>
+                    <span className="font-mono tabular text-sm font-medium shrink-0" style={{ color: "var(--ink)" }}>{formatBRL(r.valorAtual)}/mês</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs" style={{ color: "var(--ink-soft)" }}>
+              Detecção automática, baseada em padrão de cobrança — pode não pegar tudo, e raramente pode confundir compras coincidentemente parecidas. Vale conferir de vez em quando.
+            </p>
           </>
         )
       )}
