@@ -6,9 +6,10 @@ import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts, createAccount, updateAccount, deleteAccount } from "@/lib/data/accounts";
 import { listAllTransactions } from "@/lib/data/transactions";
 import { listDebts } from "@/lib/data/debts";
+import { listCustomCategories } from "@/lib/data/categories";
 import {
   computeAccountBalance, computeCardInvoices, formatBucketLabel, formatBRL, parseBRNumber, toISODate,
-  CATEGORIES,
+  mergeCategories,
 } from "@/lib/finance/core";
 
 export default function ContasPage() {
@@ -20,6 +21,8 @@ export default function ContasPage() {
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [debts, setDebts] = useState([]);
+  const [customCategories, setCustomCategories] = useState([]);
+  const allCategories = useMemo(() => mergeCategories(customCategories), [customCategories]);
   const [toast, setToast] = useState("");
 
   const [newAccountName, setNewAccountName] = useState("");
@@ -40,14 +43,16 @@ export default function ContasPage() {
   }
 
   const reload = useCallback(async (hid) => {
-    const [accs, txs, dbts] = await Promise.all([
+    const [accs, txs, dbts, cats] = await Promise.all([
       listAccounts(supabase, hid),
       listAllTransactions(supabase, hid),
       listDebts(supabase, hid),
+      listCustomCategories(supabase, hid),
     ]);
     setAccounts(accs);
     setTransactions(txs);
     setDebts(dbts);
+    setCustomCategories(cats);
   }, [supabase]);
 
   useEffect(() => {
@@ -423,13 +428,13 @@ export default function ContasPage() {
                   <select
                     value={d.categoryId}
                     onChange={(e) => {
-                      const cat = CATEGORIES.find((c) => c.id === e.target.value);
+                      const cat = allCategories.find((c) => c.id === e.target.value);
                       updateSyncDraft(i, "categoryId", e.target.value);
                       updateSyncDraft(i, "subcategory", cat?.subcategories[0] || "");
                     }}
                     className="text-xs px-1.5 py-1 rounded border" style={{ borderColor: "var(--border)" }}
                   >
-                    {CATEGORIES.filter((c) => (d.type === "receita" ? c.group === "receita" : c.group !== "receita")).map((c) => (
+                    {allCategories.filter((c) => (d.type === "receita" ? c.group === "receita" : c.group !== "receita")).map((c) => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>

@@ -10,7 +10,7 @@ import { getMyHouseholdId, listAccounts, createAccount } from "@/lib/data/accoun
 import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup, deleteTransactionsByIds } from "@/lib/data/transactions";
 import { listCustomCategories } from "@/lib/data/categories";
 import {
-  CATEGORIES, PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
+  PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
   categoryById, mergeCategories, categoryByIdIn, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
   getEffectiveMonth, accountsToMap, formatBucketLabel, transactionsToCSV, downloadCSV,
 } from "@/lib/finance/core";
