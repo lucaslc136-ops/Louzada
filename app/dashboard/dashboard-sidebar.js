@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Receipt, Landmark, PiggyBank, Calculator, Plus, Settings } from "lucide-react";
+import { LayoutDashboard, Receipt, Landmark, PiggyBank, Calculator, Plus, Settings, TrendingUp } from "lucide-react";
 import { LogoIcon } from "@/components/logo";
 
 const NAV_ITEMS = [
@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: "/dashboard/contas", label: "Contas & Cartões", Icon: Landmark },
   { href: "/dashboard/dividas", label: "Dívidas", Icon: PiggyBank },
   { href: "/dashboard/financiamento", label: "Financiamento", Icon: Calculator },
+  { href: "/dashboard/investimentos", label: "Investimentos", Icon: TrendingUp },
 ];
 
 export default function DashboardSidebar() {

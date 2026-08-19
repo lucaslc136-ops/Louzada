@@ -1,17 +1,19 @@
 "use client";
 
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import {
-  Wand2, Plus, Trash2, Pencil, X, Check, ChevronLeft, ChevronRight,
-  Wallet, TrendingUp, TrendingDown, Scale, Receipt, SlidersHorizontal,
+  Wand2, Plus, Trash2, Pencil, X, Check, ChevronLeft, ChevronRight, AlertTriangle, RefreshCw,
+  Wallet, TrendingUp, TrendingDown, Scale, Receipt, SlidersHorizontal, Download,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts, createAccount } from "@/lib/data/accounts";
-import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup } from "@/lib/data/transactions";
+import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup, deleteTransactionsByIds, listTransactionsByIds } from "@/lib/data/transactions";
+import { listCustomCategories } from "@/lib/data/categories";
 import {
-  CATEGORIES, PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
-  categoryById, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
-  getEffectiveMonth, accountsToMap, formatBucketLabel,
+  PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
+  categoryById, mergeCategories, categoryByIdIn, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
+  getEffectiveMonth, accountsToMap, formatBucketLabel, transactionsToCSV, downloadCSV,
 } from "@/lib/finance/core";
 
 function emptyForm() {
@@ -30,6 +32,7 @@ export default function LancamentosPage() {
   const [loading, setLoading] = useState(true);
   const [householdId, setHouseholdId] = useState(null);
   const [accounts, setAccounts] = useState([]);
+  const [customCategories, setCustomCategories] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
@@ -37,12 +40,19 @@ export default function LancamentosPage() {
   });
 
   const [showFilters, setShowFilters] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [filterAccountId, setFilterAccountId] = useState("");
   const [filterCategoryId, setFilterCategoryId] = useState("");
   const [filterType, setFilterType] = useState("");
   const [filterFrom, setFilterFrom] = useState("");
   const [filterTo, setFilterTo] = useState("");
   const [customRangeTx, setCustomRangeTx] = useState(null); // preenchido só quando o período personalizado está ativo
+  const [reviewMode, setReviewMode] = useState(false); // true quando veio do alerta "aguardando revisão"
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const [rangeLoading, setRangeLoading] = useState(false);
 
   const [nlpText, setNlpText] = useState("");
@@ -75,8 +85,9 @@ export default function LancamentosPage() {
       const hid = await getMyHouseholdId(supabase);
       setHouseholdId(hid);
       if (hid) {
-        const [accs] = await Promise.all([listAccounts(supabase, hid)]);
+        const [accs, customCats] = await Promise.all([listAccounts(supabase, hid), listCustomCategories(supabase, hid)]);
         setAccounts(accs);
+        setCustomCategories(customCats);
         if (accs.length && !form.accountId) {
           setForm((f) => ({ ...f, accountId: accs[0].id }));
         }
@@ -86,6 +97,23 @@ export default function LancamentosPage() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Se a pessoa clicou num alerta "aguardando revisão" no sino, a URL vem com ?review=id1,id2 —
+  // busca exatamente esses lançamentos (de qualquer mês) e mostra só eles, em vez do mês atual.
+  useEffect(() => {
+    if (!householdId) return;
+    const reviewParam = searchParams.get("review");
+    if (!reviewParam) return;
+    const ids = reviewParam.split(",").filter(Boolean);
+    if (ids.length === 0) return;
+    (async () => {
+      const rows = await listTransactionsByIds(supabase, householdId, ids);
+      setCustomRangeTx(rows);
+      setReviewMode(true);
+      router.replace(pathname); // limpa o parâmetro pra não "prender" nesse modo num refresh futuro
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [householdId]);
 
   useEffect(() => {
     if (householdId) reloadTransactions(householdId, monthCursor);
@@ -104,6 +132,7 @@ export default function LancamentosPage() {
   }, [monthCursor]);
 
   const accountsMap = useMemo(() => accountsToMap(accounts), [accounts]);
+  const allCategories = useMemo(() => mergeCategories(customCategories), [customCategories]);
 
   // Lista: mostra o que foi comprado NESTE mês (data da compra), independente de cartão ou não.
   const monthTransactions = useMemo(
@@ -126,6 +155,12 @@ export default function LancamentosPage() {
 
   const filtersActive = !!(filterAccountId || filterCategoryId || filterType || customRangeTx !== null);
 
+  // limpa a seleção sempre que a lista visível muda (mês, filtro etc.) — evita ficar com itens
+  // "selecionados" que já nem aparecem mais na tela.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [monthCursor, filterAccountId, filterCategoryId, filterType, customRangeTx]);
+
   async function applyCustomRange() {
     if (!filterFrom || !filterTo) { showToast("Preencha as duas datas do período."); return; }
     setRangeLoading(true);
@@ -146,6 +181,17 @@ export default function LancamentosPage() {
     setFilterFrom("");
     setFilterTo("");
     setCustomRangeTx(null);
+    setReviewMode(false);
+  }
+
+  function handleExportCSV() {
+    if (filteredTransactions.length === 0) { showToast("Não há lançamentos pra exportar."); return; }
+    const csv = transactionsToCSV(filteredTransactions, accountsMap, allCategories);
+    const nomeArquivo = filtersActive
+      ? `lancamentos-filtrados-${toISODate(new Date())}.csv`
+      : `lancamentos-${monthCursor}.csv`;
+    downloadCSV(csv, nomeArquivo);
+    showToast(`${filteredTransactions.length} lançamento(s) exportado(s).`);
   }
 
   // Totais: por padrão usam o mês de IMPACTO no fluxo de caixa — compra no cartão só conta no mês
@@ -168,13 +214,13 @@ export default function LancamentosPage() {
   }, [transactions, accountsMap, monthCursor, monthTransactions, filtersActive, filteredTransactions]);
 
   const accountName = useCallback((id) => accounts.find((a) => a.id === id)?.name || "—", [accounts]);
-  const currentCategory = categoryById(form.categoryId) || CATEGORIES[0];
+  const currentCategory = categoryByIdIn(form.categoryId, allCategories) || allCategories[0];
 
   async function handleAddAccount() {
     if (!newAccountName.trim() || !householdId) return;
     try {
       const acc = await createAccount(supabase, householdId, { name: newAccountName.trim(), type: newAccountType });
-      setAccounts((prev) => [...prev, acc]);
+      setAccounts((prev) => (prev.some((a) => a.id === acc.id) ? prev : [...prev, acc]));
       if (!form.accountId) setForm((f) => ({ ...f, accountId: acc.id }));
       setNewAccountName("");
       showToast("Conta adicionada.");
@@ -230,6 +276,48 @@ export default function LancamentosPage() {
     setShowManualForm(true);
   }
 
+  function toggleSelect(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((prev) =>
+      prev.size === filteredTransactions.length ? new Set() : new Set(filteredTransactions.map((t) => t.id))
+    );
+  }
+
+  function clearSelection() {
+    setSelectedIds(new Set());
+  }
+
+  const selectedTotal = useMemo(() => {
+    let receitas = 0, despesas = 0;
+    for (const t of filteredTransactions) {
+      if (!selectedIds.has(t.id)) continue;
+      if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);
+    }
+    return { receitas: round2(receitas), despesas: round2(despesas) };
+  }, [filteredTransactions, selectedIds]);
+
+  async function handleBulkDelete() {
+    setBulkDeleting(true);
+    try {
+      await deleteTransactionsByIds(supabase, Array.from(selectedIds));
+      showToast(`${selectedIds.size} lançamento(s) excluído(s).`);
+      clearSelection();
+      setShowBulkDeleteConfirm(false);
+      await reloadTransactions(householdId, monthCursor);
+    } catch {
+      showToast("Não consegui excluir os lançamentos selecionados.");
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
   async function handleDelete(tx) {
     if (tx.group_id) {
       const wantsGroup = window.confirm(
@@ -252,7 +340,9 @@ export default function LancamentosPage() {
   }
 
   async function updateCategoryInline(tx, categoryId, subcategory) {
-    await updateTransaction(supabase, tx.id, { category_id: categoryId, subcategory });
+    const patch = { category_id: categoryId, subcategory };
+    if (tx.needs_review) patch.needs_review = false; // ao revisar a categoria, considera confirmado
+    await updateTransaction(supabase, tx.id, patch);
     await reloadTransactions(householdId, monthCursor);
     setEditingCategoryRowId(null);
   }
@@ -323,12 +413,18 @@ export default function LancamentosPage() {
         </div>
       )}
 
-      {/* Navegador de mês (esconde quando um período personalizado está ativo) */}
+      {/* Navegador de mês (esconde quando um período personalizado ou o modo revisão está ativo) */}
       {customRangeTx === null ? (
         <div className="flex items-center justify-center gap-4">
           <button onClick={() => shiftMonth(-1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronLeft size={18} /></button>
           <span className="text-sm font-medium tabular w-40 text-center">{monthLabel}</span>
           <button onClick={() => shiftMonth(1)} className="p-1.5 rounded-full hover:bg-slate-200/60"><ChevronRight size={18} /></button>
+        </div>
+      ) : reviewMode ? (
+        <div className="flex items-center justify-center gap-2 text-sm rounded-lg px-3 py-2" style={{ background: "#faf1e6" }}>
+          <RefreshCw size={14} style={{ color: "var(--amber)" }} />
+          <span style={{ color: "var(--amber)" }}>Mostrando {customRangeTx.length} lançamento(s) aguardando revisão</span>
+          <button onClick={clearAllFilters} className="text-xs underline" style={{ color: "var(--brick)" }}>voltar pro mês</button>
         </div>
       ) : (
         <div className="flex items-center justify-center gap-2 text-sm">
@@ -338,13 +434,20 @@ export default function LancamentosPage() {
       )}
 
       {/* Filtros */}
-      <div>
+      <div className="flex gap-2">
         <button
           onClick={() => setShowFilters((s) => !s)}
           className="text-sm px-3.5 py-2 rounded-lg border bg-white flex items-center gap-1.5"
           style={{ borderColor: filtersActive ? "var(--brick)" : "var(--border)", color: filtersActive ? "var(--brick)" : "var(--ink)" }}
         >
           <SlidersHorizontal size={14} /> Filtros {filtersActive && "· ativos"}
+        </button>
+        <button
+          onClick={handleExportCSV}
+          className="text-sm px-3.5 py-2 rounded-lg border bg-white flex items-center gap-1.5"
+          style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+        >
+          <Download size={14} /> Exportar CSV
         </button>
       </div>
 
@@ -362,7 +465,7 @@ export default function LancamentosPage() {
               <select value={filterCategoryId} onChange={(e) => setFilterCategoryId(e.target.value)}
                 className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}>
                 <option value="">Todas</option>
-                {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {allCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </Field>
             <Field label="Tipo">
@@ -461,15 +564,15 @@ export default function LancamentosPage() {
               <span style={{ color: "var(--ink-soft)" }}>Categoria</span>
               <select
                 value={nlpPreview.categoryId}
-                onChange={(e) => { const cat = categoryById(e.target.value); setNlpPreview({ ...nlpPreview, categoryId: e.target.value, subcategory: cat.subcategories[0] }); }}
+                onChange={(e) => { const cat = categoryByIdIn(e.target.value, allCategories); setNlpPreview({ ...nlpPreview, categoryId: e.target.value, subcategory: cat.subcategories[0] }); }}
                 className="text-right bg-transparent"
               >
-                {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {allCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
 
               <span style={{ color: "var(--ink-soft)" }}>Subcategoria</span>
               <select value={nlpPreview.subcategory} onChange={(e) => setNlpPreview({ ...nlpPreview, subcategory: e.target.value })} className="text-right bg-transparent">
-                {(categoryById(nlpPreview.categoryId)?.subcategories || []).map((s) => <option key={s} value={s}>{s}</option>)}
+                {(categoryByIdIn(nlpPreview.categoryId, allCategories)?.subcategories || []).map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
 
               <span style={{ color: "var(--ink-soft)" }}>Conta</span>
@@ -528,10 +631,10 @@ export default function LancamentosPage() {
             <Field label="Categoria">
               <select
                 value={form.categoryId}
-                onChange={(e) => { const cat = categoryById(e.target.value); setForm((f) => ({ ...f, categoryId: e.target.value, subcategory: cat.subcategories[0] })); }}
+                onChange={(e) => { const cat = categoryByIdIn(e.target.value, allCategories); setForm((f) => ({ ...f, categoryId: e.target.value, subcategory: cat.subcategories[0] })); }}
                 className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}
               >
-                {CATEGORIES.filter((c) => (form.type === "receita" ? c.group === "receita" : c.group !== "receita")).map((c) => (
+                {allCategories.filter((c) => (form.type === "receita" ? c.group === "receita" : c.group !== "receita")).map((c) => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
@@ -603,6 +706,22 @@ export default function LancamentosPage() {
         <h2 className="font-serif text-lg mb-3">
           {filtersActive ? "Lançamentos filtrados" : `Lançamentos de ${monthLabel.toLowerCase()}`}
         </h2>
+
+        {selectedIds.size > 0 && (
+          <div className="flex items-center justify-between gap-3 rounded-lg px-3.5 py-2.5 mb-2" style={{ background: "#fdf1ed" }}>
+            <span className="text-xs" style={{ color: "var(--brick)" }}>{selectedIds.size} selecionado(s)</span>
+            <div className="flex items-center gap-3">
+              <button onClick={clearSelection} className="text-xs underline" style={{ color: "var(--ink-soft)" }}>Cancelar seleção</button>
+              <button
+                onClick={() => setShowBulkDeleteConfirm(true)}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg text-white" style={{ background: "var(--rose)" }}
+              >
+                <Trash2 size={12} /> Excluir selecionados
+              </button>
+            </div>
+          </div>
+        )}
+
         {filteredTransactions.length === 0 ? (
           <div className="text-sm rounded-xl border border-dashed p-8 text-center" style={{ borderColor: "var(--border)", color: "var(--ink-soft)" }}>
             {filtersActive ? "Nenhum lançamento encontrado com esses filtros." : "Nenhum lançamento neste mês ainda."}
@@ -612,6 +731,14 @@ export default function LancamentosPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-[11px] uppercase tracking-wide" style={{ color: "var(--ink-soft)", background: "var(--paper)" }}>
+                  <th className="pl-4 pr-2 py-2.5 font-medium w-8">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.size > 0 && selectedIds.size === filteredTransactions.length}
+                      onChange={toggleSelectAll}
+                      title="Selecionar todos"
+                    />
+                  </th>
                   <th className="px-4 py-2.5 font-medium">Data</th>
                   <th className="px-4 py-2.5 font-medium">Categoria</th>
                   <th className="px-4 py-2.5 font-medium hidden sm:table-cell">Conta</th>
@@ -622,22 +749,25 @@ export default function LancamentosPage() {
               </thead>
               <tbody>
                 {filteredTransactions.map((t) => {
-                  const cat = categoryById(t.category_id);
+                  const cat = categoryByIdIn(t.category_id, allCategories);
                   const isEditingCat = editingCategoryRowId === t.id;
                   const effMonth = getEffectiveMonth(t, accountsMap);
                   const shifted = effMonth !== t.date.slice(0, 7);
                   return (
-                    <tr key={t.id} className="border-t" style={{ borderColor: "var(--border)" }}>
+                    <tr key={t.id} className="border-t" style={{ borderColor: "var(--border)", background: selectedIds.has(t.id) ? "#fdf1ed" : "transparent" }}>
+                      <td className="pl-4 pr-2 py-2.5">
+                        <input type="checkbox" checked={selectedIds.has(t.id)} onChange={() => toggleSelect(t.id)} />
+                      </td>
                       <td className="px-4 py-2.5 tabular whitespace-nowrap">{formatDatePt(t.date)}</td>
                       <td className="px-4 py-2.5">
                         {isEditingCat ? (
                           <div className="flex gap-1">
                             <select
                               value={t.category_id}
-                              onChange={(e) => { const c = categoryById(e.target.value); updateCategoryInline(t, e.target.value, c.subcategories[0]); }}
+                              onChange={(e) => { const c = categoryByIdIn(e.target.value, allCategories); updateCategoryInline(t, e.target.value, c.subcategories[0]); }}
                               className="text-xs px-1.5 py-1 rounded border" style={{ borderColor: "var(--border)" }}
                             >
-                              {CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                              {allCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                             </select>
                             <button onClick={() => setEditingCategoryRowId(null)} className="text-slate-400"><X size={13} /></button>
                           </div>
@@ -653,6 +783,16 @@ export default function LancamentosPage() {
                         )}
                         {shifted && (
                           <div className="text-[10px] mt-0.5" style={{ color: "var(--brick)" }}>→ fatura de {formatBucketLabel(effMonth).toLowerCase()}</div>
+                        )}
+                        {t.needs_review && (
+                          <div className="text-[10px] mt-0.5 flex items-center gap-1" style={{ color: "var(--amber)" }}>
+                            <RefreshCw size={9} /> Confirme a categoria
+                          </div>
+                        )}
+                        {t.possible_duplicate_of && (
+                          <div className="text-[10px] mt-0.5 flex items-center gap-1" style={{ color: "var(--rose)" }}>
+                            <AlertTriangle size={9} /> Pode ser duplicata
+                          </div>
                         )}
                       </td>
                       <td className="px-4 py-2.5 hidden sm:table-cell">{accountName(t.account_id)}</td>
@@ -674,6 +814,33 @@ export default function LancamentosPage() {
           </div>
         )}
       </section>
+
+      {showBulkDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(20,32,46,0.5)" }}>
+          <div className="bg-white rounded-xl p-5 max-w-sm w-full">
+            <p className="text-sm font-medium flex items-center gap-1.5 mb-3" style={{ color: "var(--rose)" }}>
+              <AlertTriangle size={16} /> Confirmar exclusão
+            </p>
+            <p className="text-sm mb-1" style={{ color: "var(--ink)" }}>
+              Isso vai apagar {selectedIds.size} lançamento(s) selecionado(s):
+            </p>
+            <p className="text-xs mb-1" style={{ color: "var(--teal)" }}>Receitas: {formatBRL(selectedTotal.receitas)}</p>
+            <p className="text-xs mb-3" style={{ color: "var(--rose)" }}>Despesas: {formatBRL(selectedTotal.despesas)}</p>
+            <p className="text-xs mb-4" style={{ color: "var(--ink-soft)" }}>Essa ação não pode ser desfeita.</p>
+            <div className="flex gap-2">
+              <button onClick={() => setShowBulkDeleteConfirm(false)} className="flex-1 text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
+                Cancelar
+              </button>
+              <button
+                onClick={handleBulkDelete} disabled={bulkDeleting}
+                className="flex-1 text-sm px-3 py-2 rounded-lg text-white disabled:opacity-50" style={{ background: "var(--rose)" }}
+              >
+                {bulkDeleting ? "Excluindo…" : "Sim, excluir"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {toast && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 text-xs px-4 py-2.5 rounded-full text-white shadow-lg z-50" style={{ background: "var(--ink)" }}>
