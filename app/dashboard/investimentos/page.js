@@ -1,7 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { RefreshCw, TrendingUp, TrendingDown, DollarSign, Euro, Bitcoin, Landmark, ChevronDown } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { RefreshCw, TrendingUp, TrendingDown, Landmark, ChevronDown, Search, Plus, X } from "lucide-react";
+
+const PADRAO = ["USD", "EUR", "BTC"];
+const WATCHLIST_KEY = "louzada_investimentos_watchlist";
 
 const EDUCACIONAL = [
   {
@@ -30,18 +33,37 @@ const EDUCACIONAL = [
   },
 ];
 
-function QuoteCard({ icon, label, valor, variacaoPct, formato }) {
+function loadWatchlist() {
+  if (typeof window === "undefined") return [];
+  try {
+    return JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveWatchlist(list) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(WATCHLIST_KEY, JSON.stringify(list));
+}
+
+function QuoteCard({ code, nome, valor, variacaoPct, onRemove }) {
   const positivo = variacaoPct != null && variacaoPct >= 0;
   return (
-    <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
-      <div className="flex items-center gap-1.5 text-xs mb-1" style={{ color: "var(--ink-soft)" }}>
-        {icon} {label}
-      </div>
+    <div className="rounded-xl border bg-white p-4 relative" style={{ borderColor: "var(--border)" }}>
+      {onRemove && (
+        <button onClick={onRemove} className="absolute top-2 right-2 text-slate-300 hover:text-rose-600" title="Remover">
+          <X size={13} />
+        </button>
+      )}
+      <p className="text-xs mb-1" style={{ color: "var(--ink-soft)" }}>{nome || code} <span className="opacity-60">({code})</span></p>
       {valor == null ? (
         <p className="text-sm" style={{ color: "var(--ink-soft)" }}>—</p>
       ) : (
         <>
-          <p className="font-mono tabular text-lg font-medium" style={{ color: "var(--ink)" }}>{formato(valor)}</p>
+          <p className="font-mono tabular text-lg font-medium" style={{ color: "var(--ink)" }}>
+            {valor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+          </p>
           {variacaoPct != null && (
             <p className="text-xs flex items-center gap-1 mt-0.5" style={{ color: positivo ? "var(--teal)" : "var(--rose)" }}>
               {positivo ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
@@ -55,16 +77,28 @@ function QuoteCard({ icon, label, valor, variacaoPct, formato }) {
 }
 
 export default function InvestimentosPage() {
+  const [watchlist, setWatchlist] = useState([]);
   const [quotes, setQuotes] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [expandido, setExpandido] = useState(null);
 
-  async function fetchQuotes() {
+  const [disponiveis, setDisponiveis] = useState([]);
+  const [busca, setBusca] = useState("");
+  const [buscaAberta, setBuscaAberta] = useState(false);
+
+  useEffect(() => {
+    setWatchlist(loadWatchlist());
+    fetch("/api/market/available").then((r) => r.json()).then((d) => setDisponiveis(d.moedas || [])).catch(() => {});
+  }, []);
+
+  const todosCodigos = useMemo(() => [...PADRAO, ...watchlist], [watchlist]);
+
+  async function fetchQuotes(codigos) {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/market/quotes");
+      const res = await fetch(`/api/market/quotes?codes=${codigos.join(",")}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
       setQuotes(data);
@@ -76,10 +110,34 @@ export default function InvestimentosPage() {
   }
 
   useEffect(() => {
-    fetchQuotes();
-  }, []);
+    if (todosCodigos.length > 0) fetchQuotes(todosCodigos);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watchlist]);
 
-  const formatBRL = (n) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  function addToWatchlist(code) {
+    if (todosCodigos.includes(code)) return;
+    const next = [...watchlist, code];
+    setWatchlist(next);
+    saveWatchlist(next);
+    setBusca("");
+    setBuscaAberta(false);
+  }
+
+  function removeFromWatchlist(code) {
+    const next = watchlist.filter((c) => c !== code);
+    setWatchlist(next);
+    saveWatchlist(next);
+  }
+
+  const resultadosBusca = useMemo(() => {
+    if (!busca.trim()) return [];
+    const termo = busca.trim().toUpperCase();
+    return disponiveis
+      .filter((m) => !todosCodigos.includes(m.code))
+      .filter((m) => m.code.includes(termo) || m.nome.toUpperCase().includes(termo))
+      .slice(0, 8);
+  }, [busca, disponiveis, todosCodigos]);
+
   const formatPct = (n) => `${n.toFixed(2)}% a.a.`;
 
   return (
@@ -90,12 +148,38 @@ export default function InvestimentosPage() {
           <p className="text-sm mt-1" style={{ color: "var(--ink-soft)" }}>Cotações públicas — sem nenhuma recomendação, só informação.</p>
         </div>
         <button
-          onClick={fetchQuotes} disabled={loading}
+          onClick={() => fetchQuotes(todosCodigos)} disabled={loading}
           className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border disabled:opacity-50"
           style={{ borderColor: "var(--border)", color: "var(--ink)" }}
         >
           <RefreshCw size={13} className={loading ? "animate-spin" : ""} /> Atualizar
         </button>
+      </div>
+
+      <div className="relative">
+        <div className="flex items-center gap-2 rounded-lg border px-3 py-2" style={{ borderColor: "var(--border)" }}>
+          <Search size={14} style={{ color: "var(--ink-soft)" }} />
+          <input
+            value={busca}
+            onChange={(e) => { setBusca(e.target.value); setBuscaAberta(true); }}
+            onFocus={() => setBuscaAberta(true)}
+            placeholder="Buscar qualquer moeda ou cripto (ex: GBP, ETH, JPY...)"
+            className="flex-1 text-sm outline-none"
+          />
+        </div>
+        {buscaAberta && resultadosBusca.length > 0 && (
+          <div className="absolute z-20 mt-1 w-full bg-white rounded-lg border shadow-lg overflow-hidden" style={{ borderColor: "var(--border)" }}>
+            {resultadosBusca.map((m) => (
+              <button
+                key={m.code} onClick={() => addToWatchlist(m.code)}
+                className="w-full flex items-center justify-between gap-2 text-xs px-3 py-2 hover:bg-slate-50 text-left"
+              >
+                <span>{m.nome} <span style={{ color: "var(--ink-soft)" }}>({m.code})</span></span>
+                <Plus size={12} style={{ color: "var(--teal)" }} />
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {error && (
@@ -105,14 +189,23 @@ export default function InvestimentosPage() {
       {quotes && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            <QuoteCard icon={<DollarSign size={13} />} label="Dólar (USD)" valor={quotes.cambio.usd?.valor} variacaoPct={quotes.cambio.usd?.variacaoPct} formato={formatBRL} />
-            <QuoteCard icon={<Euro size={13} />} label="Euro (EUR)" valor={quotes.cambio.eur?.valor} variacaoPct={quotes.cambio.eur?.variacaoPct} formato={formatBRL} />
-            <QuoteCard icon={<Bitcoin size={13} />} label="Bitcoin (BTC)" valor={quotes.cambio.btc?.valor} variacaoPct={quotes.cambio.btc?.variacaoPct} formato={formatBRL} />
-            <QuoteCard icon={<Landmark size={13} />} label="Selic (meta)" valor={quotes.taxas.selic?.valor} variacaoPct={null} formato={formatPct} />
-            <QuoteCard icon={<Landmark size={13} />} label="CDI" valor={quotes.taxas.cdi?.valor} variacaoPct={null} formato={formatPct} />
+            {PADRAO.map((code) => (
+              <QuoteCard key={code} code={code} nome={quotes.cotacoes[code]?.nome} valor={quotes.cotacoes[code]?.valor} variacaoPct={quotes.cotacoes[code]?.variacaoPct} />
+            ))}
+            {watchlist.map((code) => (
+              <QuoteCard key={code} code={code} nome={quotes.cotacoes[code]?.nome} valor={quotes.cotacoes[code]?.valor} variacaoPct={quotes.cotacoes[code]?.variacaoPct} onRemove={() => removeFromWatchlist(code)} />
+            ))}
+            <div className="rounded-xl border bg-white p-4">
+              <div className="flex items-center gap-1.5 text-xs mb-1" style={{ color: "var(--ink-soft)" }}><Landmark size={13} /> Selic (meta)</div>
+              {quotes.taxas.selic ? <p className="font-mono tabular text-lg font-medium" style={{ color: "var(--ink)" }}>{formatPct(quotes.taxas.selic.valor)}</p> : <p className="text-sm" style={{ color: "var(--ink-soft)" }}>—</p>}
+            </div>
+            <div className="rounded-xl border bg-white p-4">
+              <div className="flex items-center gap-1.5 text-xs mb-1" style={{ color: "var(--ink-soft)" }}><Landmark size={13} /> CDI</div>
+              {quotes.taxas.cdi ? <p className="font-mono tabular text-lg font-medium" style={{ color: "var(--ink)" }}>{formatPct(quotes.taxas.cdi.valor)}</p> : <p className="text-sm" style={{ color: "var(--ink-soft)" }}>—</p>}
+            </div>
           </div>
           <p className="text-[11px]" style={{ color: "var(--ink-soft)" }}>
-            Câmbio e Bitcoin: AwesomeAPI. Selic e CDI: Banco Central do Brasil (série {quotes.taxas.selic ? "mais recente disponível" : "—"}, data {quotes.taxas.selic?.data || "—"}).
+            Câmbio e cripto: AwesomeAPI. Selic e CDI: Banco Central do Brasil.
           </p>
         </>
       )}
