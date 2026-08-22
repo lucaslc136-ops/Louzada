@@ -3,8 +3,10 @@ import { NextResponse } from "next/server";
 export const dynamic = "force-dynamic";
 
 // GET /api/market/available — lista todo código de moeda/cripto que a AwesomeAPI conhece,
-// pra alimentar a busca na tela de Investimentos. Guardado em cache por 1h no servidor
-// (essa lista muda raramente), não precisa buscar de novo a cada visita.
+// pra alimentar a busca na tela de Investimentos. Guardado em cache por 1h no servidor.
+//
+// Formato real da API confirmado: um mapa direto código -> nome, ex:
+// { "USD": "Dólar Americano", "ETH": "Ethereum", "BRL": "Real Brasileiro", ... }
 let cache = null;
 let cacheTimestamp = 0;
 const CACHE_MS = 60 * 60 * 1000;
@@ -19,28 +21,16 @@ export async function GET() {
     const res = await fetch("https://economia.awesomeapi.com.br/json/available/uniq", { cache: "no-store" });
     const data = await res.json();
 
-    if (!data || typeof data !== "object") {
+    if (!data || typeof data !== "object" || Array.isArray(data)) {
       return NextResponse.json({ moedas: [], error: "Formato inesperado da API." }, { status: 502 });
     }
 
-    // A API devolve PARES, tipo "USD-BRL", "USD-BRLT" (turismo), "USD-BRLPTAX" (PTAX).
-    // A gente só quer o código da moeda em si (ex: "USD"), cotado contra o Real padrão
-    // (pares terminados em "-BRL"), pra alimentar a busca e bater com o que a rota de
-    // cotações (/api/market/quotes) já usa.
-    const vistos = new Set();
     const moedas = [];
-
-    for (const [par, nome] of Object.entries(data)) {
-      if (typeof par !== "string" || !par.endsWith("-BRL")) continue;
-
-      const code = par.slice(0, -4); // remove o "-BRL" do final
-      if (!/^[A-Z0-9]{2,6}$/.test(code)) continue; // blindagem: só código de moeda de verdade
-      if (code === "BRL" || vistos.has(code)) continue;
+    for (const [code, nome] of Object.entries(data)) {
+      if (typeof code !== "string" || typeof nome !== "string") continue;
+      if (!/^[A-Z0-9]{2,15}$/.test(code)) continue; // blindagem: só código de moeda de verdade
+      moedas.push({ code, nome });
       if (moedas.length >= MAX_ITENS) break;
-
-      vistos.add(code);
-      const nomeExibicao = typeof nome === "string" ? nome.split("/")[0].trim() : code;
-      moedas.push({ code, nome: nomeExibicao });
     }
 
     moedas.sort((a, b) => a.code.localeCompare(b.code));

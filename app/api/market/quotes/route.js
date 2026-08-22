@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-
 // Sem isso, o Next.js pode tratar essa rota como estática e cacheá-la desde o build — servindo
 // sempre a MESMA cotação "congelada" de quando o site foi publicado, em vez de buscar de novo
 // a cada visita. "force-dynamic" garante que ela roda de verdade, toda vez.
@@ -9,26 +8,34 @@ const PADRAO = ["USD", "EUR", "BTC"];
 
 // GET /api/market/quotes?codes=USD,EUR,BTC,ETH — dado público, sem segredo nenhum envolvido.
 // Passa pelo nosso servidor só pra evitar qualquer problema de CORS chamando direto do navegador.
-// "codes" é opcional — sem ele, usa USD/EUR/BTC. Aceita qualquer código que a AwesomeAPI suporte
-// (mais de 150 moedas, incluindo várias criptos), consultado dinamicamente.
+// "codes" é opcional — sem ele, usa USD/EUR/BTC. Aceita qualquer código que a AwesomeAPI suporte.
 //
-// Cada fonte é buscada de forma independente (Promise.allSettled) — se uma falhar (a
-// AwesomeAPI ou o Banco Central ficarem fora do ar, por exemplo), as outras ainda aparecem,
-// em vez de tudo virar erro por causa de uma fonte só.
+// Cada moeda é buscada de forma INDEPENDENTE (uma chamada por código, todas em paralelo). Antes,
+// era uma única chamada combinada pra todos os códigos de uma vez — o que significa que se UM
+// código inválido ou não suportado fosse adicionado (ex: via busca), a resposta inteira podia
+// falhar, derrubando até USD/EUR/BTC junto. Agora, se uma moeda falhar, só ela fica sem valor —
+// as outras continuam aparecendo normalmente.
 export async function GET(request) {
   const codesParam = request.nextUrl.searchParams.get("codes");
-  const codes = codesParam ? codesParam.split(",").map((c) => c.trim().toUpperCase()).filter(Boolean) : PADRAO;
-  const pares = codes.map((c) => `${c}-BRL`).join(",");
+  const codes = codesParam
+    ? [...new Set(codesParam.split(",").map((c) => c.trim().toUpperCase()).filter(Boolean))]
+    : PADRAO;
 
-  const [cambioResult, selicResult, cdiResult] = await Promise.allSettled([
-    fetch(`https://economia.awesomeapi.com.br/last/${pares}`, { cache: "no-store" }).then((r) => r.json()),
-    fetch("https://api.bcb.gov.br/dados/serie/bcdata.sgs.432/dados/ultimos/1?formato=json", { cache: "no-store" }).then((r) => r.json()),
-    fetch("https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados/ultimos/1?formato=json", { cache: "no-store" }).then((r) => r.json()),
+  const [cambioResults, selicRes, cdiRes] = await Promise.all([
+    Promise.allSettled(
+      codes.map((code) =>
+        fetch(`https://economia.awesomeapi.com.br/json/last/${code}-BRL`, { cache: "no-store" })
+          .then((r) => r.json())
+          .then((data) => ({ code, data }))
+      )
+    ),
+    fetch("https://api.bcb.gov.br/dados/serie/bcdata.sgs.432/dados/ultimos/1?formato=json", { cache: "no-store" })
+      .then((r) => r.json())
+      .catch(() => null),
+    fetch("https://api.bcb.gov.br/dados/serie/bcdata.sgs.12/dados/ultimos/1?formato=json", { cache: "no-store" })
+      .then((r) => r.json())
+      .catch(() => null),
   ]);
-
-  const cambio = cambioResult.status === "fulfilled" ? cambioResult.value : {};
-  const selicRes = selicResult.status === "fulfilled" ? selicResult.value : null;
-  const cdiRes = cdiResult.status === "fulfilled" ? cdiResult.value : null;
 
   // A série 12 do Banco Central vem em taxa DIÁRIA (ex: 0,05%), não anualizada — precisa
   // compor os 252 dias úteis do ano pra virar a taxa "% a.a." que todo mundo reconhece.
@@ -40,9 +47,11 @@ export async function GET(request) {
 
   const cotacoes = {};
   for (const code of codes) {
+    const resultado = cambioResults.find((r) => r.status === "fulfilled" && r.value?.code === code);
     const chave = `${code}BRL`;
-    cotacoes[code] = cambio[chave]
-      ? { valor: Number(cambio[chave].bid), variacaoPct: Number(cambio[chave].pctChange), nome: cambio[chave].name }
+    const item = resultado?.value?.data?.[chave];
+    cotacoes[code] = item
+      ? { valor: Number(item.bid), variacaoPct: Number(item.pctChange), nome: item.name }
       : null;
   }
 
