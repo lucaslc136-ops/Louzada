@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { RefreshCw, TrendingUp, TrendingDown, Landmark, ChevronDown, Search, Plus, X } from "lucide-react";
+import { RefreshCw, TrendingUp, TrendingDown, Landmark, ChevronDown, Search, Plus, X, LineChart } from "lucide-react";
 
 const PADRAO = ["USD", "EUR", "BTC"];
 const WATCHLIST_KEY = "louzada_investimentos_watchlist";
+const OPCOES_DIAS = [7, 30, 90];
 
 const EDUCACIONAL = [
   {
@@ -47,16 +48,67 @@ function saveWatchlist(list) {
   localStorage.setItem(WATCHLIST_KEY, JSON.stringify(list));
 }
 
-function QuoteCard({ code, nome, valor, variacaoPct, onRemove }) {
+// Gráfico de linha simples em SVG puro — sem depender de nenhuma biblioteca externa.
+function GraficoHistorico({ dados, loading, erro }) {
+  if (loading) {
+    return <p className="text-xs py-6 text-center" style={{ color: "var(--ink-soft)" }}>Carregando histórico...</p>;
+  }
+  if (erro) {
+    return <p className="text-xs py-6 text-center" style={{ color: "var(--rose)" }}>{erro}</p>;
+  }
+  if (!dados || dados.length < 2) {
+    return <p className="text-xs py-6 text-center" style={{ color: "var(--ink-soft)" }}>Sem dados suficientes pra desenhar o gráfico.</p>;
+  }
+
+  const valores = dados.map((d) => d.valor);
+  const min = Math.min(...valores);
+  const max = Math.max(...valores);
+  const largura = 600;
+  const altura = 140;
+  const pad = 8;
+  const escalaX = (i) => pad + (i * (largura - pad * 2)) / (dados.length - 1);
+  const escalaY = (v) => (max === min ? altura / 2 : altura - pad - ((v - min) * (altura - pad * 2)) / (max - min));
+  const pontos = dados.map((d, i) => `${escalaX(i)},${escalaY(d.valor)}`).join(" ");
+  const subiu = valores[valores.length - 1] >= valores[0];
+  const corLinha = subiu ? "var(--teal)" : "var(--rose)";
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${largura} ${altura}`} className="w-full" style={{ height: 140 }} preserveAspectRatio="none">
+        <polyline points={pontos} fill="none" stroke={corLinha} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+      </svg>
+      <div className="flex justify-between text-[11px] mt-1" style={{ color: "var(--ink-soft)" }}>
+        <span>{dados[0].data}</span>
+        <span className="font-mono tabular" style={{ color: "var(--ink)" }}>
+          mín {min.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} · máx {max.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
+        </span>
+        <span>{dados[dados.length - 1].data}</span>
+      </div>
+    </div>
+  );
+}
+
+function QuoteCard({ code, nome, valor, variacaoPct, onRemove, onClick, ativo }) {
   const positivo = variacaoPct != null && variacaoPct >= 0;
   return (
-    <div className="rounded-xl border bg-white p-4 relative" style={{ borderColor: "var(--border)" }}>
+    <button
+      onClick={onClick}
+      className="text-left rounded-xl border bg-white p-4 relative w-full transition-shadow hover:shadow-sm"
+      style={{ borderColor: ativo ? "var(--teal)" : "var(--border)" }}
+    >
       {onRemove && (
-        <button onClick={onRemove} className="absolute top-2 right-2 text-slate-300 hover:text-rose-600" title="Remover">
+        <span
+          onClick={(e) => { e.stopPropagation(); onRemove(); }}
+          className="absolute top-2 right-2 text-slate-300 hover:text-rose-600"
+          title="Remover"
+        >
           <X size={13} />
-        </button>
+        </span>
       )}
-      <p className="text-xs mb-1" style={{ color: "var(--ink-soft)" }}>{nome || code} <span className="opacity-60">({code})</span></p>
+      <p className="text-xs mb-1 flex items-center gap-1" style={{ color: "var(--ink-soft)" }}>
+        {nome || code} <span className="opacity-60">({code})</span>
+        <LineChart size={11} className="opacity-50" />
+      </p>
       {valor == null ? (
         <p className="text-sm" style={{ color: "var(--ink-soft)" }}>—</p>
       ) : (
@@ -72,7 +124,7 @@ function QuoteCard({ code, nome, valor, variacaoPct, onRemove }) {
           )}
         </>
       )}
-    </div>
+    </button>
   );
 }
 
@@ -86,6 +138,13 @@ export default function InvestimentosPage() {
   const [disponiveis, setDisponiveis] = useState([]);
   const [busca, setBusca] = useState("");
   const [buscaAberta, setBuscaAberta] = useState(false);
+
+  // --- gráfico de histórico ---
+  const [graficoCode, setGraficoCode] = useState(null);
+  const [graficoDias, setGraficoDias] = useState(30);
+  const [historicoCache, setHistoricoCache] = useState({});
+  const [historicoLoading, setHistoricoLoading] = useState(false);
+  const [historicoErro, setHistoricoErro] = useState("");
 
   useEffect(() => {
     setWatchlist(loadWatchlist());
@@ -127,6 +186,44 @@ export default function InvestimentosPage() {
     const next = watchlist.filter((c) => c !== code);
     setWatchlist(next);
     saveWatchlist(next);
+    if (graficoCode === code) setGraficoCode(null);
+  }
+
+  async function carregarHistorico(code, dias) {
+    const cacheKey = `${code}-${dias}`;
+    if (historicoCache[cacheKey]) return;
+    setHistoricoLoading(true);
+    setHistoricoErro("");
+    try {
+      const res = await fetch(`/api/market/history?code=${code}&days=${dias}`);
+      const data = await res.json();
+      if (data.error && (!data.historico || data.historico.length === 0)) {
+        setHistoricoErro(data.error);
+      }
+      setHistoricoCache((prev) => ({ ...prev, [cacheKey]: data.historico || [] }));
+    } catch {
+      setHistoricoErro("Não consegui buscar o histórico agora.");
+    } finally {
+      setHistoricoLoading(false);
+    }
+  }
+
+  function alternarGrafico(code) {
+    if (graficoCode === code) {
+      setGraficoCode(null);
+      return;
+    }
+    setGraficoCode(code);
+    setHistoricoErro("");
+    carregarHistorico(code, graficoDias);
+  }
+
+  function mudarDias(dias) {
+    setGraficoDias(dias);
+    if (graficoCode) {
+      setHistoricoErro("");
+      carregarHistorico(graficoCode, dias);
+    }
   }
 
   const resultadosBusca = useMemo(() => {
@@ -139,6 +236,11 @@ export default function InvestimentosPage() {
   }, [busca, disponiveis, todosCodigos]);
 
   const formatPct = (n) => `${n.toFixed(2)}% a.a.`;
+
+  const graficoCacheKey = graficoCode ? `${graficoCode}-${graficoDias}` : null;
+  const nomeGrafico = graficoCode
+    ? (quotes?.cotacoes?.[graficoCode]?.nome || disponiveis.find((m) => m.code === graficoCode)?.nome || graficoCode)
+    : "";
 
   return (
     <div className="space-y-5 max-w-2xl">
@@ -190,10 +292,19 @@ export default function InvestimentosPage() {
         <>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {PADRAO.map((code) => (
-              <QuoteCard key={code} code={code} nome={quotes.cotacoes[code]?.nome} valor={quotes.cotacoes[code]?.valor} variacaoPct={quotes.cotacoes[code]?.variacaoPct} />
+              <QuoteCard
+                key={code} code={code}
+                nome={quotes.cotacoes[code]?.nome} valor={quotes.cotacoes[code]?.valor} variacaoPct={quotes.cotacoes[code]?.variacaoPct}
+                onClick={() => alternarGrafico(code)} ativo={graficoCode === code}
+              />
             ))}
             {watchlist.map((code) => (
-              <QuoteCard key={code} code={code} nome={quotes.cotacoes[code]?.nome} valor={quotes.cotacoes[code]?.valor} variacaoPct={quotes.cotacoes[code]?.variacaoPct} onRemove={() => removeFromWatchlist(code)} />
+              <QuoteCard
+                key={code} code={code}
+                nome={quotes.cotacoes[code]?.nome} valor={quotes.cotacoes[code]?.valor} variacaoPct={quotes.cotacoes[code]?.variacaoPct}
+                onClick={() => alternarGrafico(code)} ativo={graficoCode === code}
+                onRemove={() => removeFromWatchlist(code)}
+              />
             ))}
             <div className="rounded-xl border bg-white p-4">
               <div className="flex items-center gap-1.5 text-xs mb-1" style={{ color: "var(--ink-soft)" }}><Landmark size={13} /> Selic (meta)</div>
@@ -204,8 +315,42 @@ export default function InvestimentosPage() {
               {quotes.taxas.cdi ? <p className="font-mono tabular text-lg font-medium" style={{ color: "var(--ink)" }}>{formatPct(quotes.taxas.cdi.valor)}</p> : <p className="text-sm" style={{ color: "var(--ink-soft)" }}>—</p>}
             </div>
           </div>
+
+          {graficoCode && (
+            <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-medium" style={{ color: "var(--ink)" }}>
+                  Histórico — {nomeGrafico} <span className="opacity-60">({graficoCode})</span>
+                </p>
+                <div className="flex items-center gap-1">
+                  {OPCOES_DIAS.map((d) => (
+                    <button
+                      key={d} onClick={() => mudarDias(d)}
+                      className="text-[11px] px-2 py-1 rounded-md border"
+                      style={{
+                        borderColor: "var(--border)",
+                        background: graficoDias === d ? "var(--ink)" : "transparent",
+                        color: graficoDias === d ? "white" : "var(--ink-soft)",
+                      }}
+                    >
+                      {d}d
+                    </button>
+                  ))}
+                  <button onClick={() => setGraficoCode(null)} className="text-slate-300 hover:text-rose-600 ml-1" title="Fechar">
+                    <X size={14} />
+                  </button>
+                </div>
+              </div>
+              <GraficoHistorico
+                dados={historicoCache[graficoCacheKey]}
+                loading={historicoLoading && !historicoCache[graficoCacheKey]}
+                erro={historicoErro}
+              />
+            </div>
+          )}
+
           <p className="text-[11px]" style={{ color: "var(--ink-soft)" }}>
-            Câmbio e cripto: AwesomeAPI. Selic e CDI: Banco Central do Brasil.
+            Câmbio e cripto: AwesomeAPI. Selic e CDI: Banco Central do Brasil. Clique num card pra ver o histórico de preço.
           </p>
         </>
       )}
