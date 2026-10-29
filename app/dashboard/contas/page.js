@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Plus, Trash2, Wallet, CreditCard, Link2, RefreshCw, Check, X, AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { getMyHouseholdId, listAccounts, createAccount, updateAccount, deleteAccount } from "@/lib/data/accounts";
@@ -8,7 +8,7 @@ import { listAllTransactions } from "@/lib/data/transactions";
 import { listDebts } from "@/lib/data/debts";
 import { listCustomCategories } from "@/lib/data/categories";
 import {
-  computeAccountBalance, computeCardInvoices, formatBucketLabel, formatBRL, parseBRNumber, toISODate,
+  computeAccountBalance, computeCardLimitUsage, formatBucketLabel, formatBRL, parseBRNumber, toISODate,
   mergeCategories, round2,
 } from "@/lib/finance/core";
 
@@ -187,18 +187,60 @@ export default function ContasPage() {
     }
   }
 
-  async function handleFieldChange(account, field, rawValue) {
-    let value = rawValue;
-    if (field === "saldo_inicial" || field === "limite") {
-      value = rawValue; // texto livre (aceita vírgula); interpretado na hora de exibir
-    } else if (field === "dia_fechamento" || field === "dia_vencimento") {
-      value = parseInt(rawValue, 10) || 1;
+  // Os campos guardam o texto enquanto a pessoa digita e só gravam ao sair do campo, já como
+  // número (aceita "1.500,50"). Antes, cada tecla ia direto para o banco e a vírgula era rejeitada.
+  const focusValueRef = useRef({});
+
+  function rememberValue(account, field) {
+    focusValueRef.current[`${account.id}:${field}`] = account[field];
+  }
+
+  function handleLocalChange(account, field, raw) {
+    setAccounts((prev) => prev.map((a) => (a.id === account.id ? { ...a, [field]: raw } : a)));
+  }
+
+  async function reloadAccountsOnly() {
+    try {
+      setAccounts(await listAccounts(supabase, householdId));
+    } catch {
+      // mantém o que está na tela
+    }
+  }
+
+  async function handleCommit(account, field) {
+    const current = accounts.find((a) => a.id === account.id);
+    if (!current) return;
+    const raw = current[field];
+    let value;
+    let erro = "";
+    if (field === "name") {
+      value = String(raw ?? "").trim();
+      if (!value) erro = "O nome não pode ficar vazio.";
+    } else if (field === "saldo_inicial") {
+      value = raw === "" || raw == null ? 0 : parseBRNumber(raw);
+      if (!Number.isFinite(value)) erro = "Saldo inválido. Use números, como 1.500,50.";
+      else value = round2(value);
+    } else if (field === "limite") {
+      value = raw === "" || raw == null ? null : parseBRNumber(raw);
+      if (value !== null && (!Number.isFinite(value) || value < 0)) erro = "Limite inválido. Use números, como 5.000,00.";
+      else if (value !== null) value = round2(value);
+    } else {
+      value = parseInt(raw, 10);
+      if (!Number.isInteger(value) || value < 1 || value > 31) erro = "Informe um dia entre 1 e 31.";
+    }
+    if (erro) {
+      showToast(erro);
+      await reloadAccountsOnly();
+      return;
     }
     setAccounts((prev) => prev.map((a) => (a.id === account.id ? { ...a, [field]: value } : a)));
+    const before = focusValueRef.current[`${account.id}:${field}`];
+    if (before !== undefined && String(before ?? "") === String(value ?? "")) return; // nada mudou
     try {
       await updateAccount(supabase, account.id, { [field]: value });
     } catch {
       showToast("Não consegui salvar essa alteração.");
+      await reloadAccountsOnly();
     }
   }
 
@@ -228,11 +270,9 @@ export default function ContasPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {accounts.map((a) => {
           if (a.type === "cartao") {
-            const inv = computeCardInvoices(a, transactions, today);
-            const limiteParsed = parseBRNumber(a.limite);
-            const limite = isNaN(limiteParsed) ? 0 : limiteParsed;
-            const usadoPct = limite > 0 ? Math.min(100, Math.round((inv.currentTotal / limite) * 100)) : 0;
-            const disponivel = Math.round((limite - inv.currentTotal) * 100) / 100;
+            const uso = computeCardLimitUsage(a, transactions, today);
+            const usadoPct = uso.usoPct;
+            const disponivel = uso.disponivel;
             return (
               <div key={a.id} className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
                 <div className="flex items-center justify-between mb-3">
@@ -240,7 +280,7 @@ export default function ContasPage() {
                     <CreditCard size={15} style={{ color: "var(--brick)" }} />
                     <input
                       value={a.name}
-                      onChange={(e) => handleFieldChange(a, "name", e.target.value)}
+                      onChange={(e) => handleLocalChange(a, "name", e.target.value)} onFocus={() => rememberValue(a, "name")} onBlur={() => handleCommit(a, "name")}
                       className="bg-transparent border-b border-transparent hover:border-slate-300 focus:border-slate-400 focus:outline-none"
                     />
                   </span>
@@ -260,18 +300,18 @@ export default function ContasPage() {
                 <div className="grid grid-cols-2 gap-2 text-xs mb-3">
                   <label className="block">
                     <span style={{ color: "var(--ink-soft)" }}>Limite (R$)</span>
-                    <input type="text" inputMode="decimal" placeholder="0,00" value={a.limite ?? ""} onChange={(e) => handleFieldChange(a, "limite", e.target.value)}
+                    <input type="text" inputMode="decimal" placeholder="0,00" value={a.limite ?? ""} onChange={(e) => handleLocalChange(a, "limite", e.target.value)} onFocus={() => rememberValue(a, "limite")} onBlur={() => handleCommit(a, "limite")}
                       className="w-full mt-0.5 px-2 py-1 rounded border text-sm" style={{ borderColor: "var(--border)" }} />
                   </label>
                   <div className="flex gap-1">
                     <label className="block flex-1">
                       <span style={{ color: "var(--ink-soft)" }}>Fecha dia</span>
-                      <input type="number" min="1" max="28" value={a.dia_fechamento ?? 25} onChange={(e) => handleFieldChange(a, "dia_fechamento", e.target.value)}
+                      <input type="number" min="1" max="31" value={a.dia_fechamento ?? 25} onChange={(e) => handleLocalChange(a, "dia_fechamento", e.target.value)} onFocus={() => rememberValue(a, "dia_fechamento")} onBlur={() => handleCommit(a, "dia_fechamento")}
                         className="w-full mt-0.5 px-2 py-1 rounded border text-sm" style={{ borderColor: "var(--border)" }} />
                     </label>
                     <label className="block flex-1">
                       <span style={{ color: "var(--ink-soft)" }}>Vence dia</span>
-                      <input type="number" min="1" max="28" value={a.dia_vencimento ?? 5} onChange={(e) => handleFieldChange(a, "dia_vencimento", e.target.value)}
+                      <input type="number" min="1" max="31" value={a.dia_vencimento ?? 5} onChange={(e) => handleLocalChange(a, "dia_vencimento", e.target.value)} onFocus={() => rememberValue(a, "dia_vencimento")} onBlur={() => handleCommit(a, "dia_vencimento")}
                         className="w-full mt-0.5 px-2 py-1 rounded border text-sm" style={{ borderColor: "var(--border)" }} />
                     </label>
                   </div>
@@ -281,14 +321,26 @@ export default function ContasPage() {
                   <div className="h-full rounded-full" style={{ width: `${usadoPct}%`, background: usadoPct > 85 ? "var(--rose)" : "var(--brick)" }} />
                 </div>
 
+                {uso.faturaFechada > 0 && (
+                  <div className="flex justify-between text-xs mb-1">
+                    <span style={{ color: "var(--ink-soft)" }}>Fatura fechada, aguardando vencimento</span>
+                    <span className="font-mono tabular font-medium">{formatBRL(uso.faturaFechada)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-xs mb-1">
-                  <span style={{ color: "var(--ink-soft)" }}>Fatura de {formatBucketLabel(inv.currentBucket)}</span>
-                  <span className="font-mono tabular font-medium">{formatBRL(inv.currentTotal)}</span>
+                  <span style={{ color: "var(--ink-soft)" }}>Fatura de {formatBucketLabel(uso.atualBucket)}</span>
+                  <span className="font-mono tabular font-medium">{formatBRL(uso.faturaAtual)}</span>
                 </div>
                 <div className="flex justify-between text-xs mb-1">
-                  <span style={{ color: "var(--ink-soft)" }}>Fatura de {formatBucketLabel(inv.nextBucket)}</span>
-                  <span className="font-mono tabular">{formatBRL(inv.nextTotal)}</span>
+                  <span style={{ color: "var(--ink-soft)" }}>Fatura de {formatBucketLabel(uso.proximoBucket)}</span>
+                  <span className="font-mono tabular">{formatBRL(uso.proximaFatura)}</span>
                 </div>
+                {uso.demaisFuturas > 0 && (
+                  <div className="flex justify-between text-xs mb-1">
+                    <span style={{ color: "var(--ink-soft)" }}>Parcelas seguintes</span>
+                    <span className="font-mono tabular">{formatBRL(uso.demaisFuturas)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-xs pt-1 mt-1 border-t" style={{ borderColor: "var(--border)" }}>
                   <span style={{ color: "var(--ink-soft)" }}>Limite disponível</span>
                   <span className="font-mono tabular font-medium" style={{ color: disponivel >= 0 ? "var(--teal)" : "var(--rose)" }}>{formatBRL(disponivel)}</span>
@@ -304,7 +356,7 @@ export default function ContasPage() {
                   <Wallet size={15} style={{ color: "var(--teal)" }} />
                   <input
                     value={a.name}
-                    onChange={(e) => handleFieldChange(a, "name", e.target.value)}
+                    onChange={(e) => handleLocalChange(a, "name", e.target.value)} onFocus={() => rememberValue(a, "name")} onBlur={() => handleCommit(a, "name")}
                     className="bg-transparent border-b border-transparent hover:border-slate-300 focus:border-slate-400 focus:outline-none"
                   />
                 </span>
@@ -322,7 +374,7 @@ export default function ContasPage() {
               </div>
               <label className="block text-xs mb-3">
                 <span style={{ color: "var(--ink-soft)" }}>Saldo inicial (R$)</span>
-                <input type="text" inputMode="decimal" placeholder="0,00" value={a.saldo_inicial ?? ""} onChange={(e) => handleFieldChange(a, "saldo_inicial", e.target.value)}
+                <input type="text" inputMode="decimal" placeholder="0,00" value={a.saldo_inicial ?? ""} onChange={(e) => handleLocalChange(a, "saldo_inicial", e.target.value)} onFocus={() => rememberValue(a, "saldo_inicial")} onBlur={() => handleCommit(a, "saldo_inicial")}
                   className="w-full mt-0.5 px-2 py-1 rounded border text-sm" style={{ borderColor: "var(--border)" }} />
               </label>
               <div className="flex justify-between text-xs pt-1 border-t" style={{ borderColor: "var(--border)" }}>

@@ -13,7 +13,7 @@ import { listCustomCategories } from "@/lib/data/categories";
 import {
   PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
   categoryById, mergeCategories, categoryByIdIn, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
-  getEffectiveMonth, accountsToMap, formatBucketLabel, transactionsToCSV, downloadCSV,
+  getEffectiveMonth, accountsToMap, formatBucketLabel, transactionsToCSV, downloadCSV, buildTransactionEditPatch,
 } from "@/lib/finance/core";
 
 function emptyForm() {
@@ -248,7 +248,15 @@ export default function LancamentosPage() {
       };
 
       if (editingId) {
-        await updateTransaction(supabase, editingId, base);
+        // edição só muda o que o formulário mostra; parcelamento, origem e vínculos ficam intactos
+        const original = [...transactions, ...(customRangeTx || [])].find((t) => t.id === editingId);
+        if (!original) throw new Error("Lançamento não encontrado na lista.");
+        const editPatch = buildTransactionEditPatch({
+          type: form.type, value, date: form.date, category_id: form.categoryId, subcategory: form.subcategory,
+          account_id: form.accountId, payment_method: form.paymentMethod, note: form.note,
+        }, accounts.find((a) => a.id === form.accountId), original);
+        await updateTransaction(supabase, editingId, editPatch);
+        if (customRangeTx !== null) setCustomRangeTx((prev) => prev.map((t) => (t.id === editingId ? { ...t, ...editPatch } : t)));
         showToast("Lançamento atualizado.");
       } else {
         const account = accounts.find((a) => a.id === form.accountId);
@@ -319,6 +327,14 @@ export default function LancamentosPage() {
   }
 
   async function handleDelete(tx) {
+    try {
+      await handleDeleteSteps(tx);
+    } catch {
+      showToast("Não consegui excluir. Nada foi apagado, tente de novo.");
+    }
+  }
+
+  async function handleDeleteSteps(tx) {
     if (tx.group_id) {
       const wantsGroup = window.confirm(
         `Esse lançamento faz parte de um grupo (${tx.group_type === "parcelamento" ? "parcelamento" : "recorrência"}).\n\nOK = excluir o grupo inteiro\nCancelar = excluir só esta ocorrência (confirme de novo)`
@@ -342,7 +358,13 @@ export default function LancamentosPage() {
   async function updateCategoryInline(tx, categoryId, subcategory) {
     const patch = { category_id: categoryId, subcategory };
     if (tx.needs_review) patch.needs_review = false; // ao revisar a categoria, considera confirmado
-    await updateTransaction(supabase, tx.id, patch);
+    try {
+      await updateTransaction(supabase, tx.id, patch);
+    } catch {
+      showToast("Não consegui salvar a categoria.");
+      return;
+    }
+    if (customRangeTx !== null) setCustomRangeTx((prev) => prev.map((t) => (t.id === tx.id ? { ...t, ...patch } : t)));
     await reloadTransactions(householdId, monthCursor);
     setEditingCategoryRowId(null);
   }
@@ -367,7 +389,7 @@ export default function LancamentosPage() {
         account_id: nlpPreview.accountId, payment_method: "Débito",
         installment: false, recurrence: "nenhuma", note: nlpPreview.note, source: "nlp",
       };
-      await createTransaction(supabase, householdId, base, null);
+      await createTransaction(supabase, householdId, base, accounts.find((a) => a.id === nlpPreview.accountId) || null);
       await reloadTransactions(householdId, monthCursor);
       setNlpText("");
       setNlpPreview(null);

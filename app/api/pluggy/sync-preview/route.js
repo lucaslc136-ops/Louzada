@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getAuthedHousehold } from "@/lib/pluggy/auth-helper";
 import { getPluggyApiKey, fetchPluggyTransactions, fetchPluggyAccountById } from "@/lib/pluggy/client";
 import { mapPluggyTransactionToDraft, filterNewPluggyTransactions, findPossibleDuplicate } from "@/lib/finance/core";
+import { fetchAllPages, fetchExistingExternalIds } from "@/lib/data/paginate";
 
 // POST /api/pluggy/sync-preview — busca transações novas da conta vinculada, SEM salvar nada
 // ainda. Devolve uma lista pra pessoa revisar/ajustar categoria antes de confirmar.
@@ -38,26 +39,22 @@ export async function POST(request) {
     const dateFrom = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const pluggyTxs = await fetchPluggyTransactions(apiKey, account.pluggy_account_id, { dateFrom });
 
-    const { data: existing, error: existingError } = await supabase
-      .from("transactions")
-      .select("external_id")
-      .eq("household_id", householdId)
-      .not("external_id", "is", null);
-    if (existingError) throw existingError;
-
-    const existingIds = existing.map((t) => t.external_id);
+    // só consulta os ids que chegaram agora (o Supabase corta em 1000 linhas por consulta)
+    const existingIds = await fetchExistingExternalIds(supabase, householdId, pluggyTxs.map((t) => t.id));
     const novas = filterNewPluggyTransactions(pluggyTxs, existingIds);
     const drafts = novas.map((t) => mapPluggyTransactionToDraft(t, accountId));
 
     // pra detectar duplicata, olha os lançamentos digitados à mão (sem external_id) da mesma
     // conta, num período um pouco mais largo que a janela de comparação (3 dias pra cada lado).
-    const { data: manuais, error: manuaisError } = await supabase
-      .from("transactions")
-      .select("id, account_id, type, value, date, note")
-      .eq("household_id", householdId)
-      .eq("account_id", accountId)
-      .is("external_id", null);
-    if (manuaisError) throw manuaisError;
+    const manuais = await fetchAllPages(() =>
+      supabase
+        .from("transactions")
+        .select("id, account_id, type, value, date, note")
+        .eq("household_id", householdId)
+        .eq("account_id", accountId)
+        .is("external_id", null)
+        .order("id", { ascending: true })
+    );
 
     for (const d of drafts) {
       d.possibleDuplicate = findPossibleDuplicate(d, manuais);
