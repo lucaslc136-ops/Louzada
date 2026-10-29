@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { getPluggyApiKey, fetchPluggyTransactions, fetchPluggyAccountById } from "@/lib/pluggy/client";
 import { mapPluggyTransactionToDraft, filterNewPluggyTransactions, findPossibleDuplicate } from "@/lib/finance/core";
+import { fetchAllPages, fetchExistingExternalIds } from "@/lib/data/paginate";
 
 // GET /api/cron/sync-banks — chamado uma vez por dia pela Vercel (vercel.json). Só a própria
 // Vercel deve conseguir chamar isso de verdade, por isso a checagem do CRON_SECRET logo abaixo.
@@ -12,7 +13,9 @@ import { mapPluggyTransactionToDraft, filterNewPluggyTransactions, findPossibleD
 // "sincronizar" toda vez que abre o app.
 export async function GET(request) {
   const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  const secret = process.env.CRON_SECRET;
+  // sem segredo configurado a rota fica fechada (antes, "Bearer undefined" passava)
+  if (!secret || authHeader !== `Bearer ${secret}`) {
     return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
   }
 
@@ -44,16 +47,17 @@ export async function GET(request) {
     try {
       const pluggyTxs = await fetchPluggyTransactions(apiKey, conta.pluggy_account_id, { dateFrom });
 
-      const { data: existentes } = await supabase
-        .from("transactions").select("external_id")
-        .eq("household_id", conta.household_id).not("external_id", "is", null);
-      const existingIds = (existentes || []).map((t) => t.external_id);
+      // só consulta os ids que chegaram agora (o Supabase corta em 1000 linhas por consulta)
+      const existingIds = await fetchExistingExternalIds(supabase, conta.household_id, pluggyTxs.map((t) => t.id));
       const novas = filterNewPluggyTransactions(pluggyTxs, existingIds);
 
       if (novas.length > 0) {
-        const { data: manuais } = await supabase
-          .from("transactions").select("id, account_id, type, value, date, note")
-          .eq("household_id", conta.household_id).eq("account_id", conta.id).is("external_id", null);
+        const manuais = await fetchAllPages(() =>
+          supabase
+            .from("transactions").select("id, account_id, type, value, date, note")
+            .eq("household_id", conta.household_id).eq("account_id", conta.id).is("external_id", null)
+            .order("id", { ascending: true })
+        );
 
         const rows = novas.map((t) => {
           const draft = mapPluggyTransactionToDraft(t, conta.id);

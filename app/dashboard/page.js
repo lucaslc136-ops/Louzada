@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   ResponsiveContainer, BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell,
@@ -16,7 +16,7 @@ import { listCustomCategories } from "@/lib/data/categories";
 import { listSubscriptions, createSubscription, updateSubscription, deleteSubscription } from "@/lib/data/subscriptions";
 import {
   MONTH_NAMES, formatBRL, formatDatePt, toISODate, round2, detectRecurringCharges,
-  accountsToMap, getEffectiveMonth, computeAccountBalance, computeCardInvoices,
+  accountsToMap, getEffectiveMonth, computeAccountBalance, computeCardLimitUsage, computeOverview,
   computeMonthlySeries, computeCategoryBreakdown, computeCardInvoiceHistory,
   computeDebtsAggregate, computeDebtStatus, prevMonthCursor,
   computeBudgetGroups, GROUP_ORDER, GROUP_LABELS, parseBRNumber,
@@ -181,20 +181,12 @@ export default function DashboardPage() {
   const totals = useMemo(() => computeTotalsFor(monthCursor), [transactions, accountsMap, monthCursor]);
   const prevTotals = useMemo(() => computeTotalsFor(prevMonthCursor(monthCursor)), [transactions, accountsMap, monthCursor]);
 
-  const saldoTotalContas = useMemo(
-    () => round2(accounts.filter((a) => a.type === "conta").reduce((sum, a) => sum + computeAccountBalance(a, transactions, today), 0)),
-    [accounts, transactions, today]
+  const overview = useMemo(
+    () => computeOverview({ accounts, transactions, debts, todayISO: today }),
+    [accounts, transactions, debts, today]
   );
-  const faturaTotalAberta = useMemo(
-    () => round2(cards.reduce((sum, c) => sum + computeCardInvoices(c, transactions, today).currentTotal, 0)),
-    [cards, transactions, today]
-  );
-  const debtsAggregate = useMemo(() => computeDebtsAggregate(debts, today), [debts, today]);
-  const dividaTotalRestante = debtsAggregate.totalRestante;
-  const comprometidoMes = useMemo(() => round2(faturaTotalAberta + debtsAggregate.parcelaMensalAtiva), [faturaTotalAberta, debtsAggregate]);
-  const podeGastar = useMemo(() => round2(saldoTotalContas - comprometidoMes), [saldoTotalContas, comprometidoMes]);
+  const { saldoTotalContas, faturaTotalAberta, comprometidoMes, podeGastar, dividaTotalRestante, patrimonioLiquido, agregadoDividas: debtsAggregate } = overview;
   const taxaEconomia = useMemo(() => (totals.receitas > 0 ? round2((totals.saldo / totals.receitas) * 100) : 0), [totals]);
-  const patrimonioLiquido = useMemo(() => round2(saldoTotalContas - dividaTotalRestante - faturaTotalAberta), [saldoTotalContas, dividaTotalRestante, faturaTotalAberta]);
 
   const monthlySeries = useMemo(() => computeMonthlySeries(transactions, accountsMap, monthCursor, 6), [transactions, accountsMap, monthCursor]);
   const categoryBreakdown = useMemo(() => computeCategoryBreakdown(transactions, accountsMap, monthCursor, allCategories), [transactions, accountsMap, monthCursor, allCategories]);
@@ -212,20 +204,59 @@ export default function DashboardPage() {
     }, 0);
   }, [settings]);
 
-  async function updateBudgetPct(group, rawValue) {
-    const next = { ...settings, [`budget_${group}`]: rawValue };
-    setSettings(next);
+  // Os campos guardam o texto enquanto a pessoa digita e só gravam ao sair do campo, já como
+  // número (aceita "400.000" ou "17,5"). Antes, cada tecla ia direto para o banco como texto:
+  // "400.000" virava 400 e vírgula era rejeitada sem aviso.
+  const settingFocusRef = useRef({});
+
+  function rememberSetting(field) {
+    settingFocusRef.current[field] = settings?.[field];
+  }
+
+  function setSettingLocal(field, raw) {
+    setSettings((prev) => ({ ...prev, [field]: raw }));
+  }
+
+  async function reloadSettings() {
     try {
-      await upsertSettings(supabase, householdId, { [`budget_${group}`]: rawValue });
+      setSettings(await getSettings(supabase, householdId));
     } catch {
-      // mantém o valor local mesmo se a gravação falhar momentaneamente
+      // mantém o que está na tela
+    }
+  }
+
+  async function commitSetting(field, kind = "decimal") {
+    const raw = settings?.[field];
+    let value = null;
+    if (!(raw === "" || raw === null || raw === undefined)) {
+      const parsed = parseBRNumber(raw);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        showSubToast("Valor inválido. Use números, como 400.000 ou 17,5.");
+        await reloadSettings();
+        return;
+      }
+      value = kind === "int" ? Math.round(parsed) : round2(parsed);
+    }
+    setSettings((prev) => ({ ...prev, [field]: value }));
+    const before = settingFocusRef.current[field];
+    if (before !== undefined && String(before ?? "") === String(value ?? "")) return; // nada mudou
+    try {
+      await upsertSettings(supabase, householdId, { [field]: value });
+    } catch {
+      showSubToast("Não consegui salvar. Confira a conexão e tente de novo.");
+      await reloadSettings();
     }
   }
 
   async function restoreDefaultBudget() {
-    const next = { ...settings, budget_necessidades: 50, budget_desejos: 30, budget_futuro: 20 };
-    setSettings(next);
-    await upsertSettings(supabase, householdId, { budget_necessidades: 50, budget_desejos: 30, budget_futuro: 20 });
+    const defaults = { budget_necessidades: 50, budget_desejos: 30, budget_futuro: 20 };
+    setSettings((prev) => ({ ...prev, ...defaults }));
+    try {
+      await upsertSettings(supabase, householdId, defaults);
+    } catch {
+      showSubToast("Não consegui salvar. Confira a conexão e tente de novo.");
+      await reloadSettings();
+    }
   }
 
   const goalMetrics = useMemo(() => (settings ? computeGoalMetrics(settings, transactions, today) : null), [settings, transactions, today]);
@@ -245,16 +276,6 @@ export default function DashboardPage() {
       receitaMedia: receitaMedia6m, comprometidoMes, saldoTotalContas, despesaMedia: despesaMedia6m,
     });
   }, [goalMetrics, receitaMedia6m, comprometidoMes, saldoTotalContas, despesaMedia6m]);
-
-  async function updateGoalField(field, rawValue) {
-    const next = { ...settings, [field]: rawValue };
-    setSettings(next);
-    try {
-      await upsertSettings(supabase, householdId, { [field]: rawValue });
-    } catch {
-      // mantém o valor local mesmo se a gravação falhar momentaneamente
-    }
-  }
 
   function pctChange(curr, prev) {
     if (prev === 0) return curr === 0 ? 0 : null;
@@ -379,7 +400,7 @@ export default function DashboardPage() {
                   <input
                     type="text" inputMode="decimal"
                     value={settings[`budget_${g}`] ?? ""}
-                    onChange={(e) => updateBudgetPct(g, e.target.value)}
+                    onChange={(e) => setSettingLocal(`budget_${g}`, e.target.value)} onFocus={() => rememberSetting(`budget_${g}`)} onBlur={() => commitSetting(`budget_${g}`)}
                     className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }}
                   />
                 </label>
@@ -445,9 +466,8 @@ export default function DashboardPage() {
           <div className="space-y-4">
             {cards.map((c) => {
               const history = computeCardInvoiceHistory(c, transactions, monthCursor, 6);
-              const inv = computeCardInvoices(c, transactions, today);
-              const limite = Number(c.limite) || 0;
-              const pct = limite > 0 ? Math.min(100, Math.round((inv.currentTotal / limite) * 100)) : 0;
+              const uso = computeCardLimitUsage(c, transactions, today);
+              const pct = uso.usoPct;
               return (
                 <ChartCard key={c.id} title={c.name} right={<span className="text-xs font-mono" style={{ color: pct > 85 ? "var(--rose)" : "var(--ink-soft)" }}>{pct}% do limite usado</span>}>
                   <ResponsiveContainer width="100%" height={180}>
@@ -578,11 +598,6 @@ export default function DashboardPage() {
             </div>
           )}
 
-          {subToast && (
-            <div className="fixed bottom-5 left-1/2 -translate-x-1/2 text-xs px-4 py-2.5 rounded-full text-white shadow-lg z-50" style={{ background: "var(--ink)" }}>
-              {subToast}
-            </div>
-          )}
         </>
       )}
 
@@ -592,22 +607,22 @@ export default function DashboardPage() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <label className="block">
                 <span className="block text-xs mb-1" style={{ color: "var(--ink-soft)" }}>Valor do imóvel (R$)</span>
-                <input type="text" inputMode="decimal" value={settings.goal_valor_imovel ?? ""} onChange={(e) => updateGoalField("goal_valor_imovel", e.target.value)}
+                <input type="text" inputMode="decimal" value={settings.goal_valor_imovel ?? ""} onChange={(e) => setSettingLocal("goal_valor_imovel", e.target.value)} onFocus={() => rememberSetting("goal_valor_imovel")} onBlur={() => commitSetting("goal_valor_imovel")}
                   placeholder="ex: 400.000" className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
               </label>
               <label className="block">
                 <span className="block text-xs mb-1" style={{ color: "var(--ink-soft)" }}>Entrada (%)</span>
-                <input type="text" inputMode="decimal" value={settings.goal_pct_entrada ?? ""} onChange={(e) => updateGoalField("goal_pct_entrada", e.target.value)}
+                <input type="text" inputMode="decimal" value={settings.goal_pct_entrada ?? ""} onChange={(e) => setSettingLocal("goal_pct_entrada", e.target.value)} onFocus={() => rememberSetting("goal_pct_entrada")} onBlur={() => commitSetting("goal_pct_entrada")}
                   className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
               </label>
               <label className="block">
                 <span className="block text-xs mb-1" style={{ color: "var(--ink-soft)" }}>Prazo desejado (meses)</span>
-                <input type="number" min="1" value={settings.goal_prazo_meses ?? ""} onChange={(e) => updateGoalField("goal_prazo_meses", e.target.value)}
+                <input type="number" min="1" value={settings.goal_prazo_meses ?? ""} onChange={(e) => setSettingLocal("goal_prazo_meses", e.target.value)} onFocus={() => rememberSetting("goal_prazo_meses")} onBlur={() => commitSetting("goal_prazo_meses", "int")}
                   placeholder="opcional" className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
               </label>
               <label className="block">
                 <span className="block text-xs mb-1" style={{ color: "var(--ink-soft)" }}>Já tinha guardado (R$)</span>
-                <input type="text" inputMode="decimal" value={settings.goal_valor_inicial ?? ""} onChange={(e) => updateGoalField("goal_valor_inicial", e.target.value)}
+                <input type="text" inputMode="decimal" value={settings.goal_valor_inicial ?? ""} onChange={(e) => setSettingLocal("goal_valor_inicial", e.target.value)} onFocus={() => rememberSetting("goal_valor_inicial")} onBlur={() => commitSetting("goal_valor_inicial")}
                   className="w-full text-sm px-3 py-2 rounded-lg border" style={{ borderColor: "var(--border)" }} />
               </label>
             </div>
@@ -735,6 +750,12 @@ export default function DashboardPage() {
             </div>
           </div>
         </>
+      )}
+
+      {subToast && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 text-xs px-4 py-2.5 rounded-full text-white shadow-lg z-50" style={{ background: "var(--ink)" }}>
+          {subToast}
+        </div>
       )}
     </section>
   );
