@@ -9,12 +9,13 @@ import {
 import { createClient } from "@/lib/supabase/client";
 import LoadError from "@/components/load-error";
 import { getMyHouseholdId, listAccounts, createAccount } from "@/lib/data/accounts";
-import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup, deleteTransactionsByIds, listTransactionsByIds } from "@/lib/data/transactions";
+import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup, deleteTransactionsByIds, listTransactionsByIds, listAllTransactions, applyCategoryToIds } from "@/lib/data/transactions";
+import AutoCategorize from "@/components/auto-categorize";
 import { listCustomCategories } from "@/lib/data/categories";
 import {
   PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
   categoryById, mergeCategories, categoryByIdIn, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
-  getEffectiveMonth, accountsToMap, formatBucketLabel, transactionsToCSV, downloadCSV, buildTransactionEditPatch, cardPaymentIds,
+  getEffectiveMonth, accountsToMap, formatBucketLabel, transactionsToCSV, downloadCSV, buildTransactionEditPatch, cardPaymentIds, findSimilarUncategorized,
 } from "@/lib/finance/core";
 
 function emptyForm() {
@@ -70,6 +71,8 @@ export default function LancamentosPage() {
 
   const [editingCategoryRowId, setEditingCategoryRowId] = useState(null);
   const [toast, setToast] = useState("");
+  const [similarOffer, setSimilarOffer] = useState(null); // { ids, categoryId, subcategory, label }
+  const [reviewRefresh, setReviewRefresh] = useState(0);
   const [busy, setBusy] = useState(false);
 
   function showToast(msg) {
@@ -386,6 +389,35 @@ export default function LancamentosPage() {
     if (customRangeTx !== null) setCustomRangeTx((prev) => prev.map((t) => (t.id === tx.id ? { ...t, ...patch } : t)));
     await reloadTransactions(householdId, monthCursor);
     setEditingCategoryRowId(null);
+    setReviewRefresh((n) => n + 1);
+    // Oferece repetir a escolha nos lançamentos parecidos que ainda estão em "Outros" ou em revisão.
+    if (categoryId !== "outros" && tx.type === "despesa") {
+      try {
+        const all = await listAllTransactions(supabase, householdId);
+        const ids = findSimilarUncategorized(all, accountsMap, { ...tx, ...patch });
+        if (ids.length > 0) {
+          const cat = categoryByIdIn(categoryId, allCategories);
+          setSimilarOffer({ ids, categoryId, subcategory, label: `${cat?.name || categoryId}${subcategory ? ` · ${subcategory}` : ""}` });
+        } else {
+          setSimilarOffer(null);
+        }
+      } catch {
+        setSimilarOffer(null); // a oferta é um extra, falhar aqui não atrapalha
+      }
+    }
+  }
+
+  async function applySimilarOffer() {
+    if (!similarOffer) return;
+    try {
+      await applyCategoryToIds(supabase, householdId, similarOffer.ids, similarOffer.categoryId, similarOffer.subcategory);
+      showToast(`${similarOffer.ids.length} lançamento(s) parecido(s) categorizado(s).`);
+      setSimilarOffer(null);
+      await reloadTransactions(householdId, monthCursor);
+      setReviewRefresh((n) => n + 1);
+    } catch {
+      showToast("Não consegui aplicar aos parecidos.");
+    }
   }
 
   function handleNlpParse() {
@@ -743,6 +775,24 @@ export default function LancamentosPage() {
         </form>
       )}
 
+      <AutoCategorize
+        supabase={supabase} householdId={householdId} accountsMap={accountsMap} allCategories={allCategories}
+        refreshKey={reviewRefresh}
+        onApplied={async () => { await reloadTransactions(householdId, monthCursor); setReviewRefresh((n) => n + 1); }}
+      />
+
+      {similarOffer && (
+        <div className="flex items-center justify-between gap-3 rounded-lg px-3.5 py-2.5 mb-3 border bg-white" style={{ borderColor: "var(--border)" }}>
+          <span className="text-xs" style={{ color: "var(--ink)" }}>
+            Aplicar "{similarOffer.label}" a mais {similarOffer.ids.length} lançamento(s) parecido(s)?
+          </span>
+          <span className="flex items-center gap-2 shrink-0">
+            <button onClick={() => setSimilarOffer(null)} className="text-xs underline" style={{ color: "var(--ink-soft)" }}>Agora não</button>
+            <button onClick={applySimilarOffer} className="text-xs px-3 py-1.5 rounded-lg text-white" style={{ background: "var(--ink)" }}>Aplicar</button>
+          </span>
+        </div>
+      )}
+
       {/* Tabela */}
       <section>
         <h2 className="font-serif text-lg mb-3">
@@ -782,9 +832,8 @@ export default function LancamentosPage() {
                     />
                   </th>
                   <th className="px-4 py-2.5 font-medium">Data</th>
-                  <th className="px-4 py-2.5 font-medium">Categoria</th>
+                  <th className="px-4 py-2.5 font-medium">Descrição</th>
                   <th className="px-4 py-2.5 font-medium hidden sm:table-cell">Conta</th>
-                  <th className="px-4 py-2.5 font-medium hidden sm:table-cell">Obs.</th>
                   <th className="px-4 py-2.5 font-medium text-right">Valor</th>
                   <th className="px-4 py-2.5 font-medium w-16"></th>
                 </tr>
@@ -803,8 +852,11 @@ export default function LancamentosPage() {
                       </td>
                       <td className="px-4 py-2.5 tabular whitespace-nowrap">{formatDatePt(t.date)}</td>
                       <td className="px-4 py-2.5">
+                        <div className="font-medium truncate max-w-[16rem] sm:max-w-[22rem]" style={{ color: "var(--ink)" }}>
+                          {t.note || (isPayment ? "Pagamento de fatura" : cat?.name)}
+                        </div>
                         {isEditingCat ? (
-                          <div className="flex gap-1">
+                          <div className="flex gap-1 mt-1">
                             <select
                               value={t.category_id}
                               onChange={(e) => { const c = categoryByIdIn(e.target.value, allCategories); updateCategoryInline(t, e.target.value, c.subcategories[0]); }}
@@ -814,16 +866,19 @@ export default function LancamentosPage() {
                             </select>
                             <button onClick={() => setEditingCategoryRowId(null)} className="text-slate-400"><X size={13} /></button>
                           </div>
-                        ) : isPayment ? (
-                          <span className="flex items-center gap-1" style={{ color: "var(--ink-soft)" }}>
-                            <span>Pagamento de fatura</span>
-                          </span>
                         ) : (
-                          <button onClick={() => setEditingCategoryRowId(t.id)} className="flex items-center gap-1 text-left hover:opacity-70">
-                            <span>{cat?.name}</span>
-                            <span style={{ color: "var(--ink-soft)" }} className="text-xs">· {t.subcategory}</span>
-                            <Pencil size={11} className="opacity-40" />
-                          </button>
+                          <div className="flex flex-wrap items-center gap-x-1 text-xs mt-0.5" style={{ color: "var(--ink-soft)" }}>
+                            <span className="sm:hidden">{accountName(t.account_id)} ·</span>
+                            {isPayment ? (
+                              <span>Pagamento de fatura</span>
+                            ) : (
+                              <button onClick={() => setEditingCategoryRowId(t.id)} className="flex items-center gap-1 text-left hover:opacity-70">
+                                <span>{cat?.name}</span>
+                                <span>· {t.subcategory}</span>
+                                <Pencil size={11} className="opacity-40" />
+                              </button>
+                            )}
+                          </div>
                         )}
                         {t.installment_current && (
                           <div className="text-[10px] mt-0.5" style={{ color: "var(--ink-soft)" }}>parcela {t.installment_current}/{t.installment_total}</div>
@@ -843,7 +898,6 @@ export default function LancamentosPage() {
                         )}
                       </td>
                       <td className="px-4 py-2.5 hidden sm:table-cell">{accountName(t.account_id)}</td>
-                      <td className="px-4 py-2.5 hidden sm:table-cell max-w-[160px] truncate" style={{ color: "var(--ink-soft)" }}>{t.note || "—"}</td>
                       <td className="px-4 py-2.5 text-right tabular font-mono" style={{ color: isPayment ? "var(--ink-soft)" : t.type === "receita" ? "var(--teal)" : "var(--rose)" }}>
                         {isPayment ? "" : t.type === "receita" ? "+" : "-"}{formatBRL(Number(t.value))}
                       </td>

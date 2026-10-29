@@ -22,7 +22,7 @@ import {
   computeDebtsAggregate, computeDebtStatus, prevMonthCursor,
   computeBudgetGroups, GROUP_ORDER, GROUP_LABELS, parseBRNumber,
   computeGoalMetrics, computeGoalProjection, computePreparationIndex, formatBucketLabel,
-  mergeCategories, excludeCardPayments,
+  mergeCategories, excludeCardPayments, computeUpcomingInvoices,
 } from "@/lib/finance/core";
 
 const DASH_VIEWS = [
@@ -285,6 +285,9 @@ export default function DashboardPage() {
     });
   }, [goalMetrics, receitaMedia6m, comprometidoMes, saldoTotalContas, despesaMedia6m]);
 
+  const proximasFaturas = useMemo(() => computeUpcomingInvoices(accounts, transactions, today), [accounts, transactions, today]);
+  const pendentesRevisao = useMemo(() => transactions.filter((t) => t.needs_review).length, [transactions]);
+
   function pctChange(curr, prev) {
     if (prev === 0) return curr === 0 ? 0 : null;
     return round2(((curr - prev) / Math.abs(prev)) * 100);
@@ -326,6 +329,32 @@ export default function DashboardPage() {
             <KpiCard icon={<Scale size={15} />} label="Posso gastar" value={formatBRL(podeGastar)} color={podeGastar >= 0 ? "var(--teal)" : "var(--rose)"} />
             <KpiCard icon={<PiggyBank size={15} />} label="Economizando" value={`${taxaEconomia}%`} color={taxaEconomia >= 0 ? "var(--teal)" : "var(--rose)"} />
           </div>
+
+          {(proximasFaturas.length > 0 || pendentesRevisao > 0) && (
+            <ChartCard title="Para ficar de olho">
+              <ul className="divide-y text-sm" style={{ borderColor: "var(--border)" }}>
+                {proximasFaturas.map((f) => (
+                  <li key={f.cardId} className="flex items-center justify-between gap-3 py-2">
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium">{f.nome}</span>
+                      <span className="text-xs" style={{ color: f.dias <= 3 ? "var(--rose)" : "var(--ink-soft)" }}>
+                        fatura {f.status === "fechada" ? "fechada" : "aberta"} · vence {f.dias === 0 ? "hoje" : f.dias === 1 ? "amanhã" : `em ${f.dias} dias`} ({formatDatePt(f.vencimento)})
+                      </span>
+                    </span>
+                    <span className="font-mono tabular shrink-0" style={{ color: "var(--ink)" }}>{formatBRL(f.valor)}</span>
+                  </li>
+                ))}
+                {pendentesRevisao > 0 && (
+                  <li className="py-2">
+                    <a href="/dashboard/lancamentos" className="flex items-center justify-between gap-3">
+                      <span className="text-sm">Lançamentos aguardando revisão</span>
+                      <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#fdf3dc", color: "var(--amber)" }}>{pendentesRevisao}</span>
+                    </a>
+                  </li>
+                )}
+              </ul>
+            </ChartCard>
+          )}
 
           <ChartCard title="Receitas x despesas — últimos 6 meses">
             <ResponsiveContainer width="100%" height={220}>
