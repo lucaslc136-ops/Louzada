@@ -22,7 +22,7 @@ import {
   computeDebtsAggregate, computeDebtStatus, prevMonthCursor,
   computeBudgetGroups, GROUP_ORDER, GROUP_LABELS, parseBRNumber,
   computeGoalMetrics, computeGoalProjection, computePreparationIndex, formatBucketLabel,
-  mergeCategories,
+  mergeCategories, excludeCardPayments,
 } from "@/lib/finance/core";
 
 const DASH_VIEWS = [
@@ -178,7 +178,7 @@ export default function DashboardPage() {
 
   function computeTotalsFor(month) {
     let receitas = 0, despesas = 0, count = 0;
-    for (const t of transactions) {
+    for (const t of excludeCardPayments(transactions, accountsMap)) {
       if (getEffectiveMonth(t, accountsMap) !== month) continue;
       count += 1;
       if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);

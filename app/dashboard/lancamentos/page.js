@@ -14,7 +14,7 @@ import { listCustomCategories } from "@/lib/data/categories";
 import {
   PAYMENT_METHODS, RECURRENCE_OPTIONS, MONTH_NAMES,
   categoryById, mergeCategories, categoryByIdIn, formatBRL, formatDatePt, parseBRNumber, parseNaturalLanguage, round2, toISODate,
-  getEffectiveMonth, accountsToMap, formatBucketLabel, transactionsToCSV, downloadCSV, buildTransactionEditPatch,
+  getEffectiveMonth, accountsToMap, formatBucketLabel, transactionsToCSV, downloadCSV, buildTransactionEditPatch, cardPaymentIds,
 } from "@/lib/finance/core";
 
 function emptyForm() {
@@ -140,6 +140,15 @@ export default function LancamentosPage() {
   }, [monthCursor]);
 
   const accountsMap = useMemo(() => accountsToMap(accounts), [accounts]);
+  // Pagamento de fatura (crédito no cartão e o débito que pagou) não conta como receita nem despesa.
+  const paymentIds = useMemo(() => {
+    const vistos = new Set();
+    const todos = [];
+    for (const t of [...transactions, ...(customRangeTx || [])]) {
+      if (!vistos.has(t.id)) { vistos.add(t.id); todos.push(t); }
+    }
+    return cardPaymentIds(todos, accountsMap);
+  }, [transactions, customRangeTx, accountsMap]);
   const allCategories = useMemo(() => mergeCategories(customCategories), [customCategories]);
 
   // Lista: mostra o que foi comprado NESTE mês (data da compra), independente de cartão ou não.
@@ -209,6 +218,7 @@ export default function LancamentosPage() {
     if (filtersActive) {
       let receitas = 0, despesas = 0;
       for (const t of filteredTransactions) {
+        if (paymentIds.has(t.id)) continue;
         if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);
       }
       return { receitas: round2(receitas), despesas: round2(despesas), saldo: round2(receitas - despesas), count: filteredTransactions.length };
@@ -216,10 +226,11 @@ export default function LancamentosPage() {
     let receitas = 0, despesas = 0;
     for (const t of transactions) {
       if (getEffectiveMonth(t, accountsMap) !== monthCursor) continue;
+      if (paymentIds.has(t.id)) continue;
       if (t.type === "receita") receitas += Number(t.value); else despesas += Number(t.value);
     }
     return { receitas: round2(receitas), despesas: round2(despesas), saldo: round2(receitas - despesas), count: monthTransactions.length };
-  }, [transactions, accountsMap, monthCursor, monthTransactions, filtersActive, filteredTransactions]);
+  }, [transactions, accountsMap, monthCursor, monthTransactions, filtersActive, filteredTransactions, paymentIds]);
 
   const accountName = useCallback((id) => accounts.find((a) => a.id === id)?.name || "—", [accounts]);
   const currentCategory = categoryByIdIn(form.categoryId, allCategories) || allCategories[0];
@@ -782,6 +793,7 @@ export default function LancamentosPage() {
                 {filteredTransactions.map((t) => {
                   const cat = categoryByIdIn(t.category_id, allCategories);
                   const isEditingCat = editingCategoryRowId === t.id;
+                  const isPayment = paymentIds.has(t.id);
                   const effMonth = getEffectiveMonth(t, accountsMap);
                   const shifted = effMonth !== t.date.slice(0, 7);
                   return (
@@ -802,6 +814,10 @@ export default function LancamentosPage() {
                             </select>
                             <button onClick={() => setEditingCategoryRowId(null)} className="text-slate-400"><X size={13} /></button>
                           </div>
+                        ) : isPayment ? (
+                          <span className="flex items-center gap-1" style={{ color: "var(--ink-soft)" }}>
+                            <span>Pagamento de fatura</span>
+                          </span>
                         ) : (
                           <button onClick={() => setEditingCategoryRowId(t.id)} className="flex items-center gap-1 text-left hover:opacity-70">
                             <span>{cat?.name}</span>
@@ -815,7 +831,7 @@ export default function LancamentosPage() {
                         {shifted && (
                           <div className="text-[10px] mt-0.5" style={{ color: "var(--brick)" }}>→ fatura de {formatBucketLabel(effMonth).toLowerCase()}</div>
                         )}
-                        {t.needs_review && (
+                        {t.needs_review && !isPayment && (
                           <div className="text-[10px] mt-0.5 flex items-center gap-1" style={{ color: "var(--amber)" }}>
                             <RefreshCw size={9} /> Confirme a categoria
                           </div>
@@ -828,8 +844,8 @@ export default function LancamentosPage() {
                       </td>
                       <td className="px-4 py-2.5 hidden sm:table-cell">{accountName(t.account_id)}</td>
                       <td className="px-4 py-2.5 hidden sm:table-cell max-w-[160px] truncate" style={{ color: "var(--ink-soft)" }}>{t.note || "—"}</td>
-                      <td className="px-4 py-2.5 text-right tabular font-mono" style={{ color: t.type === "receita" ? "var(--teal)" : "var(--rose)" }}>
-                        {t.type === "receita" ? "+" : "-"}{formatBRL(Number(t.value))}
+                      <td className="px-4 py-2.5 text-right tabular font-mono" style={{ color: isPayment ? "var(--ink-soft)" : t.type === "receita" ? "var(--teal)" : "var(--rose)" }}>
+                        {isPayment ? "" : t.type === "receita" ? "+" : "-"}{formatBRL(Number(t.value))}
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-1.5 justify-end">
