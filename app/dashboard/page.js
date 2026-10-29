@@ -12,6 +12,7 @@ import LoadError from "@/components/load-error";
 import { getMyHouseholdId, listAccounts } from "@/lib/data/accounts";
 import { listAllTransactions } from "@/lib/data/transactions";
 import { listDebts } from "@/lib/data/debts";
+import { listInvestments } from "@/lib/data/investments";
 import { getSettings, upsertSettings } from "@/lib/data/settings";
 import { listCustomCategories } from "@/lib/data/categories";
 import { listSubscriptions, createSubscription, updateSubscription, deleteSubscription } from "@/lib/data/subscriptions";
@@ -46,6 +47,7 @@ export default function DashboardPage() {
   const today = useMemo(() => toISODate(new Date()), []);
 
   const [loading, setLoading] = useState(true);
+  const [investments, setInvestments] = useState([]);
   const [loadError, setLoadError] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [householdId, setHouseholdId] = useState(null);
@@ -80,13 +82,15 @@ export default function DashboardPage() {
         const hid = await getMyHouseholdId(supabase);
         setHouseholdId(hid);
         if (hid) {
-          const [accs, txs, dbts, sett, customCats, subs] = await Promise.all([
+          const [accs, txs, dbts, sett, customCats, subs, invs] = await Promise.all([
             listAccounts(supabase, hid),
             listAllTransactions(supabase, hid),
             listDebts(supabase, hid),
             getSettings(supabase, hid),
             listCustomCategories(supabase, hid),
             listSubscriptions(supabase, hid),
+            // a carteira é um extra do patrimônio: se falhar, o resto do Dashboard continua
+            listInvestments(supabase, hid).catch(() => []),
           ]);
           setAccounts(accs);
           setTransactions(txs);
@@ -94,6 +98,7 @@ export default function DashboardPage() {
           setSettings(sett);
           setCustomCategories(customCats);
           setSubscriptions(subs);
+          setInvestments(invs);
         }
       } catch (e) {
         setLoadError(true);
@@ -189,9 +194,11 @@ export default function DashboardPage() {
   const totals = useMemo(() => computeTotalsFor(monthCursor), [transactions, accountsMap, monthCursor]);
   const prevTotals = useMemo(() => computeTotalsFor(prevMonthCursor(monthCursor)), [transactions, accountsMap, monthCursor]);
 
+  const investimentosTotal = useMemo(() => round2(investments.reduce((s, i) => s + Number(i.valor_atual || 0), 0)), [investments]);
+
   const overview = useMemo(
-    () => computeOverview({ accounts, transactions, debts, todayISO: today }),
-    [accounts, transactions, debts, today]
+    () => computeOverview({ accounts, transactions, debts, todayISO: today, investimentosTotal }),
+    [accounts, transactions, debts, today, investimentosTotal]
   );
   const { saldoTotalContas, faturaTotalAberta, comprometidoMes, podeGastar, dividaTotalRestante, patrimonioLiquido, agregadoDividas: debtsAggregate } = overview;
   const taxaEconomia = useMemo(() => (totals.receitas > 0 ? round2((totals.saldo / totals.receitas) * 100) : 0), [totals]);
@@ -761,7 +768,7 @@ export default function DashboardPage() {
           <KpiCard icon={<Scale size={15} />} label="Patrimônio líquido" value={formatBRL(patrimonioLiquido)} color={patrimonioLiquido >= 0 ? "var(--teal)" : "var(--rose)"} />
           <ChartCard title="Você tem x você deve">
             <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={[{ name: "Você tem", valor: saldoTotalContas }, { name: "Você deve", valor: round2(dividaTotalRestante + faturaTotalAberta) }]}>
+              <BarChart data={[{ name: "Você tem", valor: round2(saldoTotalContas + investimentosTotal) }, { name: "Você deve", valor: round2(dividaTotalRestante + faturaTotalAberta) }]}>
                 <CartesianGrid strokeDasharray="3 3" stroke={C_BORDER} vertical={false} />
                 <XAxis dataKey="name" tick={{ fontSize: 12, fill: C_SOFT }} axisLine={{ stroke: C_BORDER }} tickLine={false} />
                 <YAxis tick={{ fontSize: 10, fill: C_SOFT }} axisLine={false} tickLine={false} width={50} />
@@ -773,10 +780,14 @@ export default function DashboardPage() {
               </BarChart>
             </ResponsiveContainer>
           </ChartCard>
-          <div className="grid grid-cols-3 gap-3 text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
             <div className="rounded-xl border bg-white p-3" style={{ borderColor: "var(--border)" }}>
               <p style={{ color: "var(--ink-soft)" }}>Saldo em contas</p>
               <p className="font-mono tabular font-medium mt-1">{formatBRL(saldoTotalContas)}</p>
+            </div>
+            <div className="rounded-xl border bg-white p-3" style={{ borderColor: "var(--border)" }}>
+              <p style={{ color: "var(--ink-soft)" }}>Investimentos</p>
+              <p className="font-mono tabular font-medium mt-1" style={{ color: "var(--teal)" }}>{formatBRL(investimentosTotal)}</p>
             </div>
             <div className="rounded-xl border bg-white p-3" style={{ borderColor: "var(--border)" }}>
               <p style={{ color: "var(--ink-soft)" }}>Faturas em aberto</p>

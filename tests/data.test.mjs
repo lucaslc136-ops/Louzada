@@ -160,3 +160,54 @@ test("applyCategoryToIds muda só categoria, subcategoria e revisão, em blocos"
   assert.equal(fake.tables.transactions.find((r) => r.id === "outra").category_id, "outros"); // outra família não é afetada
   assert.equal(fake.calls.filter((c) => c.op === "update").length, 3); // 250 ids em 3 blocos
 });
+
+/* ---------------- investimentos ---------------- */
+test("criar aplicação grava o saldo inicial, e desfaz tudo se o histórico falhar", async () => {
+  const { createInvestment } = await import("../lib/data/investments.js");
+  const fake = createFakeSupabase({ investments: [], investment_entries: [] });
+  const inv = await createInvestment(fake, "h", { name: "CDB X", kind: "cdb", valor_aplicado: 1000, valor_atual: 1050 }, "2026-10-28");
+  assert.equal(fake.tables.investments.length, 1);
+  assert.equal(fake.tables.investment_entries.length, 1);
+  assert.equal(fake.tables.investment_entries[0].valor_apos, 1050);
+  assert.equal(fake.tables.investment_entries[0].investment_id, inv.id);
+
+  fake.failNext("investment_entries", "insert");
+  await assert.rejects(() => createInvestment(fake, "h", { name: "Outra", valor_atual: 10 }, "2026-10-28"), FALHA);
+  assert.equal(fake.tables.investments.length, 1, "a aplicação sem histórico foi desfeita");
+});
+
+test("aporte, resgate e atualização gravam o movimento e voltam atrás se o histórico falhar", async () => {
+  const { createInvestment, registerMovement } = await import("../lib/data/investments.js");
+  const fake = createFakeSupabase({ investments: [], investment_entries: [] });
+  let inv = await createInvestment(fake, "h", { name: "Selic", kind: "tesouro_selic", valor_aplicado: 1000, valor_atual: 1100 }, "2026-10-01");
+  inv = await registerMovement(fake, "h", inv, "aporte", 200, "2026-10-10");
+  assert.equal(inv.valor_atual, 1300);
+  assert.equal(inv.valor_aplicado, 1200);
+  inv = await registerMovement(fake, "h", inv, "resgate", 650, "2026-10-12");
+  assert.equal(inv.valor_atual, 650);
+  assert.equal(inv.valor_aplicado, 600);
+  inv = await registerMovement(fake, "h", inv, "valor", 700, "2026-10-20");
+  assert.equal(inv.valor_atual, 700);
+  assert.equal(inv.valor_aplicado, 600);
+  assert.equal(fake.tables.investment_entries.length, 4);
+
+  fake.failNext("investment_entries", "insert");
+  await assert.rejects(() => registerMovement(fake, "h", inv, "aporte", 50, "2026-10-21"), FALHA);
+  const guardada = fake.tables.investments[0];
+  assert.equal(guardada.valor_atual, 700);
+  assert.equal(guardada.valor_aplicado, 600);
+
+  await assert.rejects(() => registerMovement(fake, "h", inv, "resgate", 9999, "2026-10-21"), /resgate_maior_que_saldo/);
+  assert.equal(fake.tables.investment_entries.length, 4, "validação falhou antes de gravar qualquer coisa");
+});
+
+test("campos descritivos não deixam mudar valores por fora do histórico", async () => {
+  const { createInvestment, updateInvestmentFields } = await import("../lib/data/investments.js");
+  const fake = createFakeSupabase({ investments: [], investment_entries: [] });
+  const inv = await createInvestment(fake, "h", { name: "A", valor_aplicado: 10, valor_atual: 10 }, "2026-10-01");
+  await updateInvestmentFields(fake, inv.id, { name: "B", valor_atual: 99999, reserva: true });
+  const g = fake.tables.investments[0];
+  assert.equal(g.name, "B");
+  assert.equal(g.reserva, true);
+  assert.equal(g.valor_atual, 10);
+});

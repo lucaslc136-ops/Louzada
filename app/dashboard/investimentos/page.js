@@ -1,382 +1,344 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import { RefreshCw, TrendingUp, TrendingDown, Landmark, ChevronDown, Search, Plus, X, LineChart } from "lucide-react";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import { Plus, ChevronDown, Pencil, Trash2, ArrowUpCircle, ArrowDownCircle, RefreshCcw, ShieldCheck } from "lucide-react";
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip } from "recharts";
+import { createClient } from "@/lib/supabase/client";
+import LoadError from "@/components/load-error";
+import InvestmentForm from "@/components/investimentos/investment-form";
+import MovementModal from "@/components/investimentos/movement-modal";
+import ProjectionCard from "@/components/investimentos/projection-card";
+import MarketPanel from "@/components/investimentos/market-panel";
+import { getMyHouseholdId, listAccounts } from "@/lib/data/accounts";
+import { listAllTransactions } from "@/lib/data/transactions";
+import { listInvestments, listInvestmentEntries, createInvestment, updateInvestmentFields, registerMovement, deleteInvestment } from "@/lib/data/investments";
+import { formatBRL, toISODate, round2, accountsToMap, computeMonthlySeries, prevMonthCursor } from "@/lib/finance/core";
+import {
+  summarizePortfolio, emergencyReserveStatus, buildPortfolioHistory, averageMonthlyContribution, portfolioNotices, kindInfo,
+} from "@/lib/finance/investments";
 
-const PADRAO = ["USD", "EUR", "BTC"];
-const WATCHLIST_KEY = "louzada_investimentos_watchlist";
-const OPCOES_DIAS = [7, 30, 90];
+const META_RESERVA_KEY = "louzada_reserva_meses";
 
-const EDUCACIONAL = [
-  {
-    titulo: "Tesouro Direto",
-    texto: "Títulos públicos emitidos pelo governo federal. Você empresta dinheiro pro governo e recebe de volta com juros. Existem variações: prefixado (taxa fixa, definida na compra), Selic (acompanha a taxa básica de juros) e IPCA+ (acompanha a inflação mais um extra fixo). Costuma ser considerado um dos investimentos de menor risco do país, já que o governo federal raramente deixa de pagar.",
-  },
-  {
-    titulo: "CDB (Certificado de Depósito Bancário)",
-    texto: "Um empréstimo que você faz pro banco, em troca de juros. Muitos são pós-fixados, rendendo um percentual do CDI (ex: '110% do CDI'). Contam com proteção do FGC (Fundo Garantidor de Créditos) até um limite por CPF e instituição, o que reduz bastante o risco em caso de o banco quebrar.",
-  },
-  {
-    titulo: "Fundos Imobiliários (FIIs)",
-    texto: "Fundos que investem em imóveis (shoppings, galpões logísticos, prédios comerciais) ou em papéis ligados ao setor imobiliário. Você compra cotas negociadas na bolsa, e costuma receber uma renda mensal (aluguel dos imóveis do fundo), além da cota poder valorizar ou desvalorizar.",
-  },
-  {
-    titulo: "Ações",
-    texto: "Pequenas partes de uma empresa listada na bolsa. O valor sobe ou desce conforme o mercado avalia a empresa, e algumas pagam dividendos (parte do lucro distribuída aos acionistas). É considerado renda variável — sem garantia de retorno, podendo inclusive resultar em perda do valor investido.",
-  },
-  {
-    titulo: "Renda fixa x Renda variável",
-    texto: "Renda fixa (Tesouro, CDB, LCI/LCA) tem uma regra de rendimento definida desde a compra — mais previsível, geralmente menos arriscada. Renda variável (ações, FIIs, cripto) não tem retorno garantido, podendo valorizar ou desvalorizar bastante — geralmente mais arriscada, mas com potencial de retorno maior no longo prazo.",
-  },
-  {
-    titulo: "Diversificação",
-    texto: "Espalhar o dinheiro entre tipos diferentes de investimento, em vez de concentrar tudo num só, reduz o risco de uma perda grande de uma vez — se um investimento vai mal, os outros podem compensar. É um dos princípios mais repetidos por quem estuda investimentos, embora não elimine o risco por completo.",
-  },
-];
-
-function loadWatchlist() {
-  if (typeof window === "undefined") return [];
+function lerMetaReserva() {
   try {
-    return JSON.parse(localStorage.getItem(WATCHLIST_KEY) || "[]");
+    const v = parseInt(localStorage.getItem(META_RESERVA_KEY) || "6", 10);
+    return [3, 6, 12].includes(v) ? v : 6;
   } catch {
-    return [];
+    return 6;
   }
 }
 
-function saveWatchlist(list) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(WATCHLIST_KEY, JSON.stringify(list));
-}
-
-// Gráfico de linha simples em SVG puro — sem depender de nenhuma biblioteca externa.
-function GraficoHistorico({ dados, loading, erro }) {
-  if (loading) {
-    return <p className="text-xs py-6 text-center" style={{ color: "var(--ink-soft)" }}>Carregando histórico...</p>;
-  }
-  if (erro) {
-    return <p className="text-xs py-6 text-center" style={{ color: "var(--rose)" }}>{erro}</p>;
-  }
-  if (!dados || dados.length < 2) {
-    return <p className="text-xs py-6 text-center" style={{ color: "var(--ink-soft)" }}>Sem dados suficientes pra desenhar o gráfico.</p>;
-  }
-
-  const valores = dados.map((d) => d.valor);
-  const min = Math.min(...valores);
-  const max = Math.max(...valores);
-  const largura = 600;
-  const altura = 140;
-  const pad = 8;
-  const escalaX = (i) => pad + (i * (largura - pad * 2)) / (dados.length - 1);
-  const escalaY = (v) => (max === min ? altura / 2 : altura - pad - ((v - min) * (altura - pad * 2)) / (max - min));
-  const pontos = dados.map((d, i) => `${escalaX(i)},${escalaY(d.valor)}`).join(" ");
-  const subiu = valores[valores.length - 1] >= valores[0];
-  const corLinha = subiu ? "var(--teal)" : "var(--rose)";
-
+function Kpi({ label, value, sub, color }) {
   return (
-    <div>
-      <svg viewBox={`0 0 ${largura} ${altura}`} className="w-full" style={{ height: 140 }} preserveAspectRatio="none">
-        <polyline points={pontos} fill="none" stroke={corLinha} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
-      </svg>
-      <div className="flex justify-between text-[11px] mt-1" style={{ color: "var(--ink-soft)" }}>
-        <span>{dados[0].data}</span>
-        <span className="font-mono tabular" style={{ color: "var(--ink)" }}>
-          mín {min.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })} · máx {max.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
-        </span>
-        <span>{dados[dados.length - 1].data}</span>
+    <div className="rounded-xl border bg-white p-3.5" style={{ borderColor: "var(--border)" }}>
+      <p className="text-xs" style={{ color: "var(--ink-soft)" }}>{label}</p>
+      <p className="font-mono tabular text-lg font-medium mt-1" style={{ color: color || "var(--ink)" }}>{value}</p>
+      {sub && <p className="text-[11px] mt-0.5" style={{ color: "var(--ink-soft)" }}>{sub}</p>}
+    </div>
+  );
+}
+
+function BarraDistribuicao({ titulo, linhas }) {
+  return (
+    <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+      <p className="text-sm font-medium mb-3" style={{ color: "var(--ink)" }}>{titulo}</p>
+      <div className="space-y-2.5">
+        {linhas.map((l) => (
+          <div key={l.key}>
+            <div className="flex items-center justify-between text-xs mb-1">
+              <span className="truncate">{l.label}</span>
+              <span className="font-mono tabular shrink-0 ml-2" style={{ color: "var(--ink-soft)" }}>{formatBRL(l.valor)} · {Math.round(l.pct)}%</span>
+            </div>
+            <div className="h-1.5 rounded-full" style={{ background: "#edf0f4" }}>
+              <div className="h-1.5 rounded-full" style={{ width: `${Math.min(100, l.pct)}%`, background: "var(--teal)" }} />
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
 }
 
-function QuoteCard({ code, nome, valor, variacaoPct, onRemove, onClick, ativo }) {
-  const positivo = variacaoPct != null && variacaoPct >= 0;
-  return (
-    <button
-      onClick={onClick}
-      className="text-left rounded-xl border bg-white p-4 relative w-full transition-shadow hover:shadow-sm"
-      style={{ borderColor: ativo ? "var(--teal)" : "var(--border)" }}
-    >
-      {onRemove && (
-        <span
-          onClick={(e) => { e.stopPropagation(); onRemove(); }}
-          className="absolute top-2 right-2 text-slate-300 hover:text-rose-600"
-          title="Remover"
-        >
-          <X size={13} />
-        </span>
-      )}
-      <p className="text-xs mb-1 flex items-center gap-1" style={{ color: "var(--ink-soft)" }}>
-        {nome || code} <span className="opacity-60">({code})</span>
-        <LineChart size={11} className="opacity-50" />
-      </p>
-      {valor == null ? (
-        <p className="text-sm" style={{ color: "var(--ink-soft)" }}>—</p>
-      ) : (
-        <>
-          <p className="font-mono tabular text-lg font-medium" style={{ color: "var(--ink)" }}>
-            {valor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
-          </p>
-          {variacaoPct != null && (
-            <p className="text-xs flex items-center gap-1 mt-0.5" style={{ color: positivo ? "var(--teal)" : "var(--rose)" }}>
-              {positivo ? <TrendingUp size={11} /> : <TrendingDown size={11} />}
-              {positivo ? "+" : ""}{variacaoPct.toFixed(2)}% hoje
-            </p>
-          )}
-        </>
-      )}
-    </button>
-  );
-}
-
 export default function InvestimentosPage() {
-  const [watchlist, setWatchlist] = useState([]);
-  const [quotes, setQuotes] = useState(null);
+  const supabase = useMemo(() => createClient(), []);
+  const today = useMemo(() => toISODate(new Date()), []);
+
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [expandido, setExpandido] = useState(null);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [householdId, setHouseholdId] = useState(null);
+  const [investments, setInvestments] = useState([]);
+  const [entries, setEntries] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [transactions, setTransactions] = useState([]);
 
-  const [disponiveis, setDisponiveis] = useState([]);
-  const [busca, setBusca] = useState("");
-  const [buscaAberta, setBuscaAberta] = useState(false);
+  const [formState, setFormState] = useState(null); // { inv } | { inv: null }
+  const [movement, setMovement] = useState(null); // { inv, kind }
+  const [busy, setBusy] = useState(false);
+  const [mercadoAberto, setMercadoAberto] = useState(false);
+  const [toast, setToast] = useState("");
+  const [metaMeses, setMetaMeses] = useState(6);
+  const [taxas, setTaxas] = useState({});
 
-  // --- gráfico de histórico ---
-  const [graficoCode, setGraficoCode] = useState(null);
-  const [graficoDias, setGraficoDias] = useState(30);
-  const [historicoCache, setHistoricoCache] = useState({});
-  const [historicoLoading, setHistoricoLoading] = useState(false);
-  const [historicoErro, setHistoricoErro] = useState("");
+  function showToast(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(""), 3500);
+  }
+
+  const reloadCarteira = useCallback(async (hid) => {
+    const [invs, ents] = await Promise.all([listInvestments(supabase, hid), listInvestmentEntries(supabase, hid)]);
+    setInvestments(invs);
+    setEntries(ents);
+  }, [supabase]);
 
   useEffect(() => {
-    setWatchlist(loadWatchlist());
-    fetch("/api/market/available").then((r) => r.json()).then((d) => setDisponiveis(d.moedas || [])).catch(() => {});
+    setMetaMeses(lerMetaReserva());
+    fetch("/api/market/quotes?codes=USD").then((r) => r.json()).then((d) => setTaxas(d.taxas || {})).catch(() => {});
   }, []);
 
-  const todosCodigos = useMemo(() => [...PADRAO, ...watchlist], [watchlist]);
-
-  async function fetchQuotes(codigos) {
-    setLoading(true);
-    setError("");
-    try {
-      const res = await fetch(`/api/market/quotes?codes=${codigos.join(",")}`);
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      setQuotes(data);
-    } catch (e) {
-      setError(e.message || "Não consegui buscar as cotações.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   useEffect(() => {
-    if (todosCodigos.length > 0) fetchQuotes(todosCodigos);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [watchlist]);
-
-  function addToWatchlist(code) {
-    if (todosCodigos.includes(code)) return;
-    const next = [...watchlist, code];
-    setWatchlist(next);
-    saveWatchlist(next);
-    setBusca("");
-    setBuscaAberta(false);
-  }
-
-  function removeFromWatchlist(code) {
-    const next = watchlist.filter((c) => c !== code);
-    setWatchlist(next);
-    saveWatchlist(next);
-    if (graficoCode === code) setGraficoCode(null);
-  }
-
-  async function carregarHistorico(code, dias) {
-    const cacheKey = `${code}-${dias}`;
-    if (historicoCache[cacheKey]) return;
-    setHistoricoLoading(true);
-    setHistoricoErro("");
-    try {
-      const res = await fetch(`/api/market/history?code=${code}&days=${dias}`);
-      const data = await res.json();
-      if (data.error && (!data.historico || data.historico.length === 0)) {
-        setHistoricoErro(data.error);
+    (async () => {
+      setLoading(true);
+      setLoadError(false);
+      try {
+        const hid = await getMyHouseholdId(supabase);
+        setHouseholdId(hid);
+        if (hid) {
+          const [invs, ents, accs, txs] = await Promise.all([
+            listInvestments(supabase, hid), listInvestmentEntries(supabase, hid), listAccounts(supabase, hid), listAllTransactions(supabase, hid),
+          ]);
+          setInvestments(invs); setEntries(ents); setAccounts(accs); setTransactions(txs);
+        }
+      } catch {
+        setLoadError(true);
       }
-      setHistoricoCache((prev) => ({ ...prev, [cacheKey]: data.historico || [] }));
+      setLoading(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadAttempt]);
+
+  const resumo = useMemo(() => summarizePortfolio(investments), [investments]);
+  const avisos = useMemo(() => portfolioNotices(resumo), [resumo]);
+  const historico = useMemo(() => buildPortfolioHistory(entries), [entries]);
+  const aporteMedio = useMemo(() => averageMonthlyContribution(entries, today, 3), [entries, today]);
+
+  // Despesa média dos 3 últimos meses fechados, para medir a reserva de emergência.
+  const despesaMedia = useMemo(() => {
+    if (accounts.length === 0) return 0;
+    const mapa = accountsToMap(accounts);
+    const fimMes = prevMonthCursor(today.slice(0, 7));
+    const serie = computeMonthlySeries(transactions, mapa, fimMes, 3);
+    return round2(serie.reduce((s, m) => s + m.despesas, 0) / 3);
+  }, [accounts, transactions, today]);
+  const reserva = useMemo(
+    () => emergencyReserveStatus({ valorReserva: resumo.valorReserva, despesaMediaMensal: despesaMedia, metaMeses }),
+    [resumo.valorReserva, despesaMedia, metaMeses]
+  );
+
+  function mudarMetaReserva(v) {
+    setMetaMeses(v);
+    try { localStorage.setItem(META_RESERVA_KEY, String(v)); } catch { /* só uma conveniência */ }
+  }
+
+  async function handleSave(fields) {
+    setBusy(true);
+    try {
+      if (formState?.inv) {
+        await updateInvestmentFields(supabase, formState.inv.id, fields);
+        showToast("Aplicação atualizada.");
+      } else {
+        await createInvestment(supabase, householdId, fields, today);
+        showToast("Aplicação adicionada.");
+      }
+      setFormState(null);
+      await reloadCarteira(householdId);
     } catch {
-      setHistoricoErro("Não consegui buscar o histórico agora.");
+      showToast("Não consegui salvar. Nada foi alterado, tente de novo.");
     } finally {
-      setHistoricoLoading(false);
+      setBusy(false);
     }
   }
 
-  function alternarGrafico(code) {
-    if (graficoCode === code) {
-      setGraficoCode(null);
-      return;
-    }
-    setGraficoCode(code);
-    setHistoricoErro("");
-    carregarHistorico(code, graficoDias);
-  }
-
-  function mudarDias(dias) {
-    setGraficoDias(dias);
-    if (graficoCode) {
-      setHistoricoErro("");
-      carregarHistorico(graficoCode, dias);
+  async function handleMovement(valor, data) {
+    setBusy(true);
+    try {
+      await registerMovement(supabase, householdId, movement.inv, movement.kind, valor, data);
+      showToast(movement.kind === "aporte" ? "Aporte registrado." : movement.kind === "resgate" ? "Resgate registrado." : "Valor atualizado.");
+      setMovement(null);
+      await reloadCarteira(householdId);
+    } catch {
+      showToast("Não consegui registrar. Nada foi alterado, tente de novo.");
+    } finally {
+      setBusy(false);
     }
   }
 
-  const resultadosBusca = useMemo(() => {
-    if (!busca.trim()) return [];
-    const termo = busca.trim().toUpperCase();
-    return disponiveis
-      .filter((m) => !todosCodigos.includes(m.code))
-      .filter((m) => m.code.includes(termo) || m.nome.toUpperCase().includes(termo))
-      .slice(0, 8);
-  }, [busca, disponiveis, todosCodigos]);
+  async function handleDelete(inv) {
+    const ok = window.confirm(`Excluir "${inv.name}"? O histórico dessa aplicação também será apagado. Isso não afeta nenhum lançamento seu.`);
+    if (!ok) return;
+    try {
+      await deleteInvestment(supabase, inv.id);
+      showToast("Aplicação excluída.");
+      await reloadCarteira(householdId);
+    } catch {
+      showToast("Não consegui excluir.");
+    }
+  }
 
-  const formatPct = (n) => `${n.toFixed(2)}% a.a.`;
+  if (loading) return <p className="text-sm" style={{ color: "var(--ink-soft)" }}>Carregando…</p>;
+  if (loadError) return <LoadError onRetry={() => setLoadAttempt((n) => n + 1)} />;
+  if (!householdId) return <p className="text-sm" style={{ color: "var(--rose)" }}>Não encontrei sua família. Tente recarregar a página.</p>;
 
-  const graficoCacheKey = graficoCode ? `${graficoCode}-${graficoDias}` : null;
-  const nomeGrafico = graficoCode
-    ? (quotes?.cotacoes?.[graficoCode]?.nome || disponiveis.find((m) => m.code === graficoCode)?.nome || graficoCode)
-    : "";
+  const resultadoCor = resumo.resultado >= 0 ? "var(--teal)" : "var(--rose)";
+  const cdi = taxas?.cdi?.valor;
+  const taxaSugerida = Number.isFinite(cdi) ? round2(cdi) : 0;
+  const pctReserva = reserva.valorMeta ? Math.min(100, Math.round((resumo.valorReserva / reserva.valorMeta) * 100)) : 0;
 
   return (
     <div className="space-y-5 max-w-2xl">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="font-serif text-2xl" style={{ color: "var(--ink)" }}>Investimentos</h1>
-          <p className="text-sm mt-1" style={{ color: "var(--ink-soft)" }}>Cotações públicas — sem nenhuma recomendação, só informação.</p>
+          <p className="text-sm mt-1" style={{ color: "var(--ink-soft)" }}>Sua carteira, o que ela rendeu e para onde pode ir.</p>
         </div>
-        <button
-          onClick={() => fetchQuotes(todosCodigos)} disabled={loading}
-          className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg border disabled:opacity-50"
-          style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-        >
-          <RefreshCw size={13} className={loading ? "animate-spin" : ""} /> Atualizar
+        <button onClick={() => setFormState({ inv: null })} className="flex items-center gap-1.5 text-sm px-3.5 py-2 rounded-lg text-white shrink-0" style={{ background: "var(--ink)" }}>
+          <Plus size={14} /> Nova
         </button>
       </div>
 
-      <div className="relative">
-        <div className="flex items-center gap-2 rounded-lg border px-3 py-2" style={{ borderColor: "var(--border)" }}>
-          <Search size={14} style={{ color: "var(--ink-soft)" }} />
-          <input
-            value={busca}
-            onChange={(e) => { setBusca(e.target.value); setBuscaAberta(true); }}
-            onFocus={() => setBuscaAberta(true)}
-            placeholder="Buscar qualquer moeda ou cripto (ex: GBP, ETH, JPY...)"
-            className="flex-1 text-sm outline-none"
-          />
+      {investments.length === 0 ? (
+        <div className="rounded-xl border border-dashed p-6 text-center" style={{ borderColor: "var(--border)" }}>
+          <p className="text-sm" style={{ color: "var(--ink)" }}>Você ainda não cadastrou nenhuma aplicação.</p>
+          <p className="text-xs mt-1 mb-4" style={{ color: "var(--ink-soft)" }}>
+            Cadastre o que você já tem (Tesouro, CDB, ações, cripto) com quanto vale hoje. A partir daí o app mostra resultado, distribuição, reserva de emergência e projeções, e soma tudo ao seu patrimônio.
+          </p>
+          <button onClick={() => setFormState({ inv: null })} className="text-sm px-4 py-2 rounded-lg text-white" style={{ background: "var(--ink)" }}>Cadastrar primeira aplicação</button>
         </div>
-        {buscaAberta && resultadosBusca.length > 0 && (
-          <div className="absolute z-20 mt-1 w-full bg-white rounded-lg border shadow-lg overflow-hidden" style={{ borderColor: "var(--border)" }}>
-            {resultadosBusca.map((m) => (
-              <button
-                key={m.code} onClick={() => addToWatchlist(m.code)}
-                className="w-full flex items-center justify-between gap-2 text-xs px-3 py-2 hover:bg-slate-50 text-left"
-              >
-                <span>{m.nome} <span style={{ color: "var(--ink-soft)" }}>({m.code})</span></span>
-                <Plus size={12} style={{ color: "var(--teal)" }} />
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {error && (
-        <p className="text-xs rounded-lg px-3.5 py-2.5" style={{ background: "#fdf1ef", color: "var(--rose)" }}>{error}</p>
-      )}
-
-      {quotes && (
+      ) : (
         <>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {PADRAO.map((code) => (
-              <QuoteCard
-                key={code} code={code}
-                nome={quotes.cotacoes[code]?.nome} valor={quotes.cotacoes[code]?.valor} variacaoPct={quotes.cotacoes[code]?.variacaoPct}
-                onClick={() => alternarGrafico(code)} ativo={graficoCode === code}
-              />
-            ))}
-            {watchlist.map((code) => (
-              <QuoteCard
-                key={code} code={code}
-                nome={quotes.cotacoes[code]?.nome} valor={quotes.cotacoes[code]?.valor} variacaoPct={quotes.cotacoes[code]?.variacaoPct}
-                onClick={() => alternarGrafico(code)} ativo={graficoCode === code}
-                onRemove={() => removeFromWatchlist(code)}
-              />
-            ))}
-            <div className="rounded-xl border bg-white p-4">
-              <div className="flex items-center gap-1.5 text-xs mb-1" style={{ color: "var(--ink-soft)" }}><Landmark size={13} /> Selic (meta)</div>
-              {quotes.taxas.selic ? <p className="font-mono tabular text-lg font-medium" style={{ color: "var(--ink)" }}>{formatPct(quotes.taxas.selic.valor)}</p> : <p className="text-sm" style={{ color: "var(--ink-soft)" }}>—</p>}
-            </div>
-            <div className="rounded-xl border bg-white p-4">
-              <div className="flex items-center gap-1.5 text-xs mb-1" style={{ color: "var(--ink-soft)" }}><Landmark size={13} /> CDI</div>
-              {quotes.taxas.cdi ? <p className="font-mono tabular text-lg font-medium" style={{ color: "var(--ink)" }}>{formatPct(quotes.taxas.cdi.valor)}</p> : <p className="text-sm" style={{ color: "var(--ink-soft)" }}>—</p>}
-            </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Kpi label="Vale hoje" value={formatBRL(resumo.totalAtual)} />
+            <Kpi label="Você aplicou" value={formatBRL(resumo.totalAplicado)} />
+            <Kpi
+              label="Resultado" value={`${resumo.resultado >= 0 ? "+" : ""}${formatBRL(resumo.resultado)}`} color={resultadoCor}
+              sub={resumo.resultadoPct != null ? `${resumo.resultadoPct >= 0 ? "+" : ""}${String(resumo.resultadoPct).replace(".", ",")}% sobre o aplicado` : null}
+            />
+            <Kpi label="Aporte médio" value={formatBRL(aporteMedio)} sub="por mês, últimos 3 meses" />
           </div>
 
-          {graficoCode && (
-            <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-sm font-medium" style={{ color: "var(--ink)" }}>
-                  Histórico — {nomeGrafico} <span className="opacity-60">({graficoCode})</span>
-                </p>
-                <div className="flex items-center gap-1">
-                  {OPCOES_DIAS.map((d) => (
-                    <button
-                      key={d} onClick={() => mudarDias(d)}
-                      className="text-[11px] px-2 py-1 rounded-md border"
-                      style={{
-                        borderColor: "var(--border)",
-                        background: graficoDias === d ? "var(--ink)" : "transparent",
-                        color: graficoDias === d ? "white" : "var(--ink-soft)",
-                      }}
-                    >
-                      {d}d
-                    </button>
-                  ))}
-                  <button onClick={() => setGraficoCode(null)} className="text-slate-300 hover:text-rose-600 ml-1" title="Fechar">
-                    <X size={14} />
-                  </button>
-                </div>
-              </div>
-              <GraficoHistorico
-                dados={historicoCache[graficoCacheKey]}
-                loading={historicoLoading && !historicoCache[graficoCacheKey]}
-                erro={historicoErro}
-              />
+          {avisos.length > 0 && (
+            <div className="rounded-lg px-3.5 py-2.5 text-xs space-y-1" style={{ background: "#fdf3dc", color: "var(--amber)" }}>
+              {avisos.map((a) => <p key={a}>{a}</p>)}
             </div>
           )}
 
-          <p className="text-[11px]" style={{ color: "var(--ink-soft)" }}>
-            Câmbio e cripto: AwesomeAPI. Selic e CDI: Banco Central do Brasil. Clique num card pra ver o histórico de preço.
-          </p>
+          <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium flex items-center gap-1.5" style={{ color: "var(--ink)" }}><ShieldCheck size={15} /> Reserva de emergência</p>
+              <label className="text-xs flex items-center gap-1.5" style={{ color: "var(--ink-soft)" }}>
+                meta
+                <select value={metaMeses} onChange={(e) => mudarMetaReserva(parseInt(e.target.value, 10))} className="text-xs px-1.5 py-1 rounded border" style={{ borderColor: "var(--border)" }}>
+                  {[3, 6, 12].map((m) => <option key={m} value={m}>{m} meses</option>)}
+                </select>
+              </label>
+            </div>
+            {reserva.mesesCobertos == null ? (
+              <p className="text-xs mt-2" style={{ color: "var(--ink-soft)" }}>
+                {resumo.valorReserva > 0 ? "Sem histórico de despesas suficiente para medir." : "Marque as aplicações que fazem parte da sua reserva e eu calculo quantos meses de despesa ela cobre."}
+              </p>
+            ) : (
+              <>
+                <p className="text-sm mt-2" style={{ color: "var(--ink)" }}>
+                  Cobre <strong>{String(reserva.mesesCobertos).replace(".", ",")} meses</strong> das suas despesas ({formatBRL(resumo.valorReserva)} de {formatBRL(reserva.valorMeta)}).
+                </p>
+                <div className="h-2 rounded-full mt-2" style={{ background: "#edf0f4" }}>
+                  <div className="h-2 rounded-full" style={{ width: `${pctReserva}%`, background: reserva.atingida ? "var(--teal)" : "var(--amber)" }} />
+                </div>
+                <p className="text-[11px] mt-1.5" style={{ color: "var(--ink-soft)" }}>
+                  Despesa média de {formatBRL(despesaMedia)} por mês (3 últimos meses fechados, sem contar pagamento de fatura).
+                  {!reserva.atingida && ` Faltam ${formatBRL(reserva.falta)} para a meta.`}
+                </p>
+              </>
+            )}
+          </div>
+
+          <div>
+            <h2 className="font-serif text-lg mb-2">Minha carteira</h2>
+            <div className="space-y-2.5">
+              {investments.map((inv) => {
+                const res = round2(Number(inv.valor_atual) - Number(inv.valor_aplicado));
+                const pct = Number(inv.valor_aplicado) > 0 ? round2((res / Number(inv.valor_aplicado)) * 100) : null;
+                return (
+                  <div key={inv.id} className="rounded-xl border bg-white p-3.5 relative" style={{ borderColor: "var(--border)" }}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate" style={{ color: "var(--ink)" }}>{inv.name}</p>
+                        <p className="text-xs mt-0.5" style={{ color: "var(--ink-soft)" }}>
+                          {kindInfo(inv.kind).label}{inv.institution ? ` · ${inv.institution}` : ""}
+                          {inv.vencimento ? ` · vence ${inv.vencimento.split("-").reverse().join("/")}` : ""}
+                          {inv.taxa_anual != null ? ` · ${String(inv.taxa_anual).replace(".", ",")}% a.a.` : ""}
+                        </p>
+                        {inv.reserva && <span className="inline-block text-[10px] mt-1 px-1.5 py-0.5 rounded" style={{ background: "#e3f1ee", color: "var(--teal)" }}>reserva de emergência</span>}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="font-mono tabular text-sm font-medium">{formatBRL(Number(inv.valor_atual))}</p>
+                        <p className="text-[11px] font-mono tabular" style={{ color: res >= 0 ? "var(--teal)" : "var(--rose)" }}>
+                          {res >= 0 ? "+" : ""}{formatBRL(res)}{pct != null ? ` (${String(pct).replace(".", ",")}%)` : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-2.5 flex-wrap">
+                      <button onClick={() => setMovement({ inv, kind: "aporte" })} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border" style={{ borderColor: "var(--border)" }}><ArrowUpCircle size={12} /> Aportar</button>
+                      <button onClick={() => setMovement({ inv, kind: "resgate" })} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border" style={{ borderColor: "var(--border)" }}><ArrowDownCircle size={12} /> Resgatar</button>
+                      <button onClick={() => setMovement({ inv, kind: "valor" })} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg border" style={{ borderColor: "var(--border)" }}><RefreshCcw size={12} /> Atualizar valor</button>
+                      <span className="flex-1" />
+                      <button onClick={() => setFormState({ inv })} className="text-slate-400 hover:text-slate-700 p-1.5" title="Editar"><Pencil size={13} /></button>
+                      <button onClick={() => handleDelete(inv)} className="text-slate-400 hover:text-rose-600 p-1.5" title="Excluir"><Trash2 size={13} /></button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <BarraDistribuicao titulo="Por classe" linhas={resumo.porGrupo} />
+          <BarraDistribuicao titulo="Por tipo" linhas={resumo.porTipo} />
+          {resumo.porInstituicao.length > 1 && <BarraDistribuicao titulo="Por instituição" linhas={resumo.porInstituicao} />}
+
+          {historico.length >= 2 && (
+            <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
+              <p className="text-sm font-medium mb-2" style={{ color: "var(--ink)" }}>Evolução da carteira</p>
+              <ResponsiveContainer width="100%" height={180}>
+                <AreaChart data={historico}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e6e9ee" vertical={false} />
+                  <XAxis dataKey="data" tick={{ fontSize: 10, fill: "#6b7785" }} axisLine={{ stroke: "#e6e9ee" }} tickLine={false} tickFormatter={(d) => d.slice(5).split("-").reverse().join("/")} minTickGap={30} />
+                  <YAxis tick={{ fontSize: 10, fill: "#6b7785" }} axisLine={false} tickLine={false} width={52} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
+                  <Tooltip formatter={(v) => formatBRL(v)} labelFormatter={(d) => d.split("-").reverse().join("/")} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                  <Area type="stepAfter" dataKey="valor" name="Carteira" stroke="#1f6f78" fill="#1f6f78" fillOpacity={0.1} strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+              <p className="text-[11px] mt-1" style={{ color: "var(--ink-soft)" }}>O gráfico cresce conforme você registra aportes e atualiza os valores.</p>
+            </div>
+          )}
+
+          <ProjectionCard atual={resumo.totalAtual} aporteSugerido={aporteMedio} taxaSugerida={taxaSugerida} />
         </>
       )}
 
-      <div className="rounded-xl border bg-white p-4" style={{ borderColor: "var(--border)" }}>
-        <p className="text-sm font-medium mb-1" style={{ color: "var(--ink)" }}>O que é cada tipo de investimento</p>
-        <p className="text-xs mb-3" style={{ color: "var(--ink-soft)" }}>
-          Conteúdo geral e educacional — não é recomendação de compra, nem indicação do que é melhor pra vocês. Não somos consultores financeiros licenciados.
-        </p>
-        <div className="space-y-1.5">
-          {EDUCACIONAL.map((item, i) => (
-            <div key={item.titulo} className="border-t first:border-t-0 pt-1.5 first:pt-0" style={{ borderColor: "var(--border)" }}>
-              <button
-                onClick={() => setExpandido(expandido === i ? null : i)}
-                className="w-full flex items-center justify-between gap-2 text-left py-1.5"
-              >
-                <span className="text-sm" style={{ color: "var(--ink)" }}>{item.titulo}</span>
-                <ChevronDown size={14} className="shrink-0 transition-transform" style={{ color: "var(--ink-soft)", transform: expandido === i ? "rotate(180deg)" : "none" }} />
-              </button>
-              {expandido === i && (
-                <p className="text-xs pb-2" style={{ color: "var(--ink-soft)" }}>{item.texto}</p>
-              )}
-            </div>
-          ))}
-        </div>
+      <div>
+        <button onClick={() => setMercadoAberto((v) => !v)} className="w-full flex items-center justify-between rounded-xl border bg-white px-4 py-3 text-sm" style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
+          Cotações, taxas e conteúdo educativo
+          <ChevronDown size={15} style={{ transform: mercadoAberto ? "rotate(180deg)" : "none", transition: "transform .15s" }} />
+        </button>
+        {mercadoAberto && <div className="mt-3"><MarketPanel onTaxas={setTaxas} /></div>}
       </div>
+
+      {formState && <InvestmentForm inv={formState.inv} onSave={handleSave} onClose={() => setFormState(null)} busy={busy} />}
+      {movement && <MovementModal inv={movement.inv} kind={movement.kind} onConfirm={handleMovement} onClose={() => setMovement(null)} busy={busy} />}
+
+      {toast && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 text-xs px-4 py-2.5 rounded-full text-white shadow-lg z-50" style={{ background: "var(--ink)" }}>{toast}</div>
+      )}
     </div>
   );
 }

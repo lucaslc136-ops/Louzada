@@ -516,3 +516,14 @@ test("marcas coladas e importação já sugerem categoria", () => {
   const semPista = core.mapPluggyTransactionToDraft({ id: "y", type: "DEBIT", amount: -25, date: "2026-10-01T00:00:00Z", description: "Pix enviado FULANO" }, "a1");
   assert.equal(semPista.categoryId, "outros");
 });
+
+test("investimentos entram no patrimônio líquido e no resumo", () => {
+  const accounts = [{ id: "c1", type: "conta", saldo_inicial: 1000 }];
+  const sem = core.computeOverview({ accounts, transactions: [], debts: [], todayISO: "2026-10-28" });
+  const com = core.computeOverview({ accounts, transactions: [], debts: [], todayISO: "2026-10-28", investimentosTotal: 2500.5 });
+  assert.equal(sem.patrimonioLiquido, 1000);
+  assert.equal(com.patrimonioLiquido, 3500.5);
+  assert.equal(com.investimentosTotal, 2500.5);
+  assert.equal(com.saldoTotalContas, 1000); // "Quanto tenho" e "Posso gastar" continuam só com as contas
+  assert.equal(com.podeGastar, sem.podeGastar);
+});
