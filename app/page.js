@@ -9,12 +9,14 @@ export default async function RootPage() {
 
   if (!user) redirect("/login");
 
-  const { data: membership } = await supabase
+  const { data: membership, error: membershipError } = await supabase
     .from("household_members")
     .select("household_id")
     .eq("user_id", user.id)
+    .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  redirect(membership ? "/dashboard" : "/onboarding");
+  // Se a leitura falhou, o dashboard mostra a mensagem de erro em vez de empurrar para o onboarding.
+  redirect(membership || membershipError ? "/dashboard" : "/onboarding");
 }

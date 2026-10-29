@@ -10,13 +10,24 @@ export default async function DashboardLayout({ children }) {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data: membership } = await supabase
+  const { data: membership, error: membershipError } = await supabase
     .from("household_members")
     .select("household_id, households(name, invite_code)")
     .eq("user_id", user.id)
+    .order("created_at", { ascending: true })
     .limit(1)
     .maybeSingle();
 
+  // Só vai para o onboarding quando a leitura funcionou e a pessoa realmente não tem família.
+  if (membershipError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4" style={{ background: "var(--paper)" }}>
+        <p className="text-sm text-center max-w-sm" style={{ color: "var(--ink)" }}>
+          Não consegui carregar seus dados agora. Nada foi alterado. Recarregue a página em instantes.
+        </p>
+      </div>
+    );
+  }
   if (!membership) redirect("/onboarding");
 
   return (

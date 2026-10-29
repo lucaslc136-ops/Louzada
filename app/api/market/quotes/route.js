@@ -18,7 +18,7 @@ const PADRAO = ["USD", "EUR", "BTC"];
 export async function GET(request) {
   const codesParam = request.nextUrl.searchParams.get("codes");
   const codes = codesParam
-    ? [...new Set(codesParam.split(",").map((c) => c.trim().toUpperCase()).filter(Boolean))]
+    ? [...new Set(codesParam.split(",").map((c) => c.trim().toUpperCase()).filter((c) => /^[A-Z0-9-]{2,12}$/.test(c)))].slice(0, 20)
     : PADRAO;
 
   const [cambioResults, selicRes, cdiRes] = await Promise.all([

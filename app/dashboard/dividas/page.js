@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { Plus, Trash2, Pencil, PiggyBank, Percent, CalendarDays, X, RefreshCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import LoadError from "@/components/load-error";
 import { getMyHouseholdId, listAccounts } from "@/lib/data/accounts";
 import { listDebts, createDebt, updateDebt, deleteDebt, syncDebtTransactions } from "@/lib/data/debts";
 import { computeDebtStatus, formatBRL, formatDatePt, parseBRNumber, round2, toISODate } from "@/lib/finance/core";
@@ -19,6 +20,8 @@ export default function DividasPage() {
   const today = useMemo(() => toISODate(new Date()), []);
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [householdId, setHouseholdId] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const [debts, setDebts] = useState([]);
@@ -44,13 +47,18 @@ export default function DividasPage() {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const hid = await getMyHouseholdId(supabase);
-      setHouseholdId(hid);
-      if (hid) await reload(hid);
+      setLoadError(false);
+      try {
+        const hid = await getMyHouseholdId(supabase);
+        setHouseholdId(hid);
+        if (hid) await reload(hid);
+      } catch (e) {
+        setLoadError(true);
+      }
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadAttempt]);
 
   const accountName = useCallback((id) => accounts.find((a) => a.id === id)?.name || "—", [accounts]);
 
@@ -133,6 +141,7 @@ export default function DividasPage() {
   }
 
   if (loading) return <p className="text-sm" style={{ color: "var(--ink-soft)" }}>Carregando…</p>;
+  if (loadError) return <LoadError onRetry={() => setLoadAttempt((n) => n + 1)} />;
 
   return (
     <div className="space-y-4">

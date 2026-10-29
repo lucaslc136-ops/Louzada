@@ -8,6 +8,7 @@ import {
 } from "recharts";
 import { Wallet, TrendingUp, TrendingDown, Scale, CreditCard, PiggyBank, ChevronLeft, ChevronRight, Home, Gauge, Plus, Trash2, Pencil } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import LoadError from "@/components/load-error";
 import { getMyHouseholdId, listAccounts } from "@/lib/data/accounts";
 import { listAllTransactions } from "@/lib/data/transactions";
 import { listDebts } from "@/lib/data/debts";
@@ -45,6 +46,8 @@ export default function DashboardPage() {
   const today = useMemo(() => toISODate(new Date()), []);
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [householdId, setHouseholdId] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
@@ -72,28 +75,33 @@ export default function DashboardPage() {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const hid = await getMyHouseholdId(supabase);
-      setHouseholdId(hid);
-      if (hid) {
-        const [accs, txs, dbts, sett, customCats, subs] = await Promise.all([
-          listAccounts(supabase, hid),
-          listAllTransactions(supabase, hid),
-          listDebts(supabase, hid),
-          getSettings(supabase, hid),
-          listCustomCategories(supabase, hid),
-          listSubscriptions(supabase, hid),
-        ]);
-        setAccounts(accs);
-        setTransactions(txs);
-        setDebts(dbts);
-        setSettings(sett);
-        setCustomCategories(customCats);
-        setSubscriptions(subs);
+      setLoadError(false);
+      try {
+        const hid = await getMyHouseholdId(supabase);
+        setHouseholdId(hid);
+        if (hid) {
+          const [accs, txs, dbts, sett, customCats, subs] = await Promise.all([
+            listAccounts(supabase, hid),
+            listAllTransactions(supabase, hid),
+            listDebts(supabase, hid),
+            getSettings(supabase, hid),
+            listCustomCategories(supabase, hid),
+            listSubscriptions(supabase, hid),
+          ]);
+          setAccounts(accs);
+          setTransactions(txs);
+          setDebts(dbts);
+          setSettings(sett);
+          setCustomCategories(customCats);
+          setSubscriptions(subs);
+        }
+      } catch (e) {
+        setLoadError(true);
       }
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadAttempt]);
 
   function shiftMonth(delta) {
     const [y, m] = monthCursor.split("-").map(Number);
@@ -283,6 +291,7 @@ export default function DashboardPage() {
   }
 
   if (loading) return <p className="text-sm" style={{ color: "var(--ink-soft)" }}>Carregando…</p>;
+  if (loadError) return <LoadError onRetry={() => setLoadAttempt((n) => n + 1)} />;
   if (!householdId) return <p className="text-sm" style={{ color: "var(--rose)" }}>Não encontrei sua família. Tente recarregar a página.</p>;
 
   return (

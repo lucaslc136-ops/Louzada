@@ -7,9 +7,13 @@ import { getAuthedHousehold } from "@/lib/pluggy/auth-helper";
 // coisa. Exige login (não dá pra checar posse da conexão em si, já que ela ainda não está
 // vinculada a nenhuma família nesse momento — isso só acontece no passo de "link-item").
 export async function GET(request) {
-  const { user } = await getAuthedHousehold();
+  const { user, householdId } = await getAuthedHousehold();
   if (!user) {
     return NextResponse.json({ error: "Não autenticado." }, { status: 401 });
+  }
+  // Só quem já pertence a uma família pode consultar a Pluggy por aqui.
+  if (!householdId) {
+    return NextResponse.json({ error: "Sem família vinculada." }, { status: 403 });
   }
 
   const itemId = request.nextUrl.searchParams.get("itemId");
