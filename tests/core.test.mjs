@@ -393,3 +393,126 @@ test("despesa comum com o mesmo valor de um crédito de cartão não é confundi
   assert.ok(ids.has("a"));
   assert.ok(!ids.has("b"));
 });
+
+/* ---------------- movimentação interna ---------------- */
+test("resgate, aplicação automática e crédito para Pix não são receita nem despesa, rendimento é", () => {
+  const accounts = [{ id: "itau", type: "conta", saldo_inicial: 0 }];
+  const map = accountsToMap(accounts);
+  const t = (id, type, value, note) => ({ id, account_id: "itau", type, value, date: "2026-10-10", note });
+  const txs = [
+    t("res", "receita", 232.79, "Entrada RES APLIC AUT MAIS AP"),
+    t("res2", "receita", 500, "Resgate RES APLIC AUT MAIS"),
+    t("apl", "despesa", 1700, "Saída APL APLIC AUT MAIS AP"),
+    t("apl2", "despesa", 20, "APLICACAO FDO - CLIENTE"),
+    t("cred", "receita", 80, "Crédito liberado para Pix ITAU PLATINU 8"),
+    t("rend", "receita", 0.03, "Entrada REND PAGO APLIC AUT APR"),
+    t("rend2", "receita", 0.01, "Rendimentos REND PAGO APLIC AUT MAIS"),
+    t("pix", "receita", 300, "Pix recebido FULANO"),
+  ];
+  const ids = core.cardPaymentIds(txs, map);
+  assert.deepEqual([...ids].sort(), ["apl", "apl2", "cred", "res", "res2"]);
+});
+
+/* ---------------- categorização automática ---------------- */
+test("núcleo da descrição ignora o ruído do banco e agrupa o mesmo destinatário", () => {
+  assert.equal(core.descriptionCore("Pix enviado ANDRESSA DE FREITAS LOBO"), "ANDRESSA FREITAS LOBO");
+  assert.equal(core.descriptionCore("Pagamento de Pix QR Code ANDRESSA DE FREITAS LOBO 12/10"), "ANDRESSA FREITAS LOBO");
+  assert.equal(core.descriptionCore(""), "");
+});
+
+test("estabelecimentos conhecidos são reconhecidos por palavra inteira", () => {
+  assert.deepEqual(core.suggestFromMerchants("MERCADO LIVRE SP"), { categoryId: "compras", subcategory: "Diversos" });
+  assert.deepEqual(core.suggestFromMerchants("Pagamento de Pix QR Code * CEG *"), { categoryId: "moradia", subcategory: "Gás" });
+  assert.deepEqual(core.suggestFromMerchants("Supermercado Guanabara"), { categoryId: "alimentacao", subcategory: "Mercado" });
+  assert.equal(core.suggestFromMerchants("Pix enviado LUZIA SANTOS"), null); // "luz" dentro de outro nome não conta
+  assert.equal(core.suggestFromMerchants("PIX ENVIADO PAULO RAIMUNDO"), null); // "raia" não está em "RAIMUNDO"
+});
+
+test("o plano aprende com o histórico e só mexe em despesas em Outros ou em revisão", () => {
+  const accounts = [{ id: "itau", type: "conta" }, { id: "k", type: "cartao", dia_fechamento: 25 }];
+  const map = accountsToMap(accounts);
+  const t = (id, note, extra = {}) => ({ id, account_id: "itau", type: "despesa", value: 10, date: "2026-10-10", note, category_id: "outros", subcategory: "Diversos", needs_review: false, ...extra });
+  const txs = [
+    t("h1", "Pix enviado JOAO MECANICO", { category_id: "transporte", subcategory: "Combustível" }), // já categorizado pela pessoa
+    t("n1", "Pix enviado JOAO MECANICO", { needs_review: true }),
+    t("n2", "Pagamento de Pix QR Code JOAO MECANICO"),
+    t("m1", "MERCADO LIVRE", { needs_review: true }),
+    t("x1", "Pix enviado DESCONHECIDO SILVA"),
+    t("ok", "NETFLIX", { category_id: "lazer", subcategory: "Streaming" }), // não é tocado
+    t("pg", "Pagamento de boleto CARTOES CAIXA", { value: 608.83 }),
+    { id: "cr", account_id: "k", type: "receita", value: 608.83, date: "2026-10-10", note: "PGTO.BOLETO", category_id: "renda" },
+    t("rec", "Entrada qualquer", { type: "receita", category_id: "renda" }),
+  ];
+  const plano = core.planAutoCategorization(txs, map);
+  const porId = {};
+  for (const g of plano) for (const id of g.ids) porId[id] = g;
+  assert.equal(porId.n1.categoryId, "transporte");
+  assert.equal(porId.n2.categoryId, "transporte");
+  assert.equal(porId.n1.origem, "seu histórico");
+  assert.equal(porId.m1.categoryId, "compras");
+  assert.ok(!porId.x1, "sem pista, não chuta");
+  assert.ok(!porId.ok);
+  assert.ok(!porId.pg, "pagamento de fatura não é categorizado");
+  assert.ok(!porId.rec, "receita não é tocada");
+  const parecidos = core.findSimilarUncategorized(txs, map, txs.find((x) => x.id === "n1"));
+  assert.deepEqual(parecidos.sort(), ["n2"]);
+});
+
+test("próximas faturas mostram a primeira a vencer de cada cartão", () => {
+  const accounts = [
+    { id: "k1", name: "Caixa", type: "cartao", dia_fechamento: 1, dia_vencimento: 5 },
+    { id: "k2", name: "Itaú", type: "cartao", dia_fechamento: 25, dia_vencimento: 5 },
+    { id: "c", name: "Conta", type: "conta" },
+  ];
+  const t = (account_id, value, bucket) => ({ account_id, type: "despesa", value, date: "2026-10-01", invoice_bucket: bucket });
+  const txs = [
+    t("k1", 100, "2026-10"), // vence 05/10, já passou, conta como paga
+    t("k1", 300, "2026-11"), // fecha 01/11, vence 05/11
+    t("k2", 50, "2026-10"),  // fecha 25/10, vence 05/11
+    t("k2", 70, "2026-11"),
+  ];
+  const r = core.computeUpcomingInvoices(accounts, txs, "2026-10-28");
+  assert.equal(r.length, 2);
+  assert.deepEqual(r.map((x) => [x.nome, x.valor, x.vencimento, x.status]), [
+    ["Caixa", 300, "2026-11-05", "aberta"],
+    ["Itaú", 50, "2026-11-05", "fechada"],
+  ]);
+  assert.equal(r[0].dias, 8);
+});
+
+test("pagamento de fatura por descrição, só quando o cartão citado tem lançamentos", () => {
+  const accounts = [
+    { id: "itau", type: "conta", name: "Itaú" },
+    { id: "kita", type: "cartao", name: "Itaú 8103", dia_fechamento: 4, dia_vencimento: 11 },
+    { id: "kcx", type: "cartao", name: "Caixa 06", dia_fechamento: 1, dia_vencimento: 5 },
+    { id: "kbrb", type: "cartao", name: "BRB", dia_fechamento: 25, dia_vencimento: 5 },
+  ];
+  const map = accountsToMap(accounts);
+  const d = (id, account_id, value, note) => ({ id, account_id, type: "despesa", value, date: "2026-10-10", note });
+  const txs = [
+    d("compra", "kita", 80, "LOJA QUALQUER"), // dá "dados" ao cartão Itaú
+    d("compra2", "kcx", 50, "OUTRA LOJA"),
+    d("p1", "itau", 1800, "Pagamento de fatura FATURA PAGA ITAU PLATINU"),
+    d("p2", "itau", 700, "Pagamento de boleto CARTOES CAIXA ELO PF"),
+    d("p3", "itau", 580.59, "Saída PGTO MIN ITAU MC PLATINU"),
+    d("brb", "itau", 1700, "Pagamento de boleto CARTAO BRB SA"), // BRB não tem lançamentos, é o único registro do gasto
+    d("pix", "itau", 40, "Pix enviado FULANO"),
+    d("carry", "kcx", 1589.74, "TOTAL DA FATURA ANTERIOR"),
+  ];
+  const ids = core.cardPaymentIds(txs, map);
+  assert.deepEqual([...ids].sort(), ["carry", "p1", "p2", "p3"]);
+  // o total da fatura anterior não infla a fatura nem o limite usado
+  const uso = core.computeCardLimitUsage(accounts[2], txs, "2026-10-28");
+  assert.equal(uso.emAberto, 50);
+  assert.equal(core.computeUpcomingInvoices(accounts, txs, "2026-10-28").find((x) => x.cardId === "kcx").valor, 50);
+});
+
+test("marcas coladas e importação já sugerem categoria", () => {
+  assert.equal(core.suggestFromMerchants("DL *UberRidesSao PauloBRA").categoryId, "transporte");
+  assert.equal(core.suggestFromMerchants("APPLE.COM/BILLSAO PAULOBRA").subcategory, "Streaming");
+  assert.equal(core.suggestFromMerchants("MERCADO  ALERIO DE JANEIRBRA").categoryId, "alimentacao");
+  const draft = core.mapPluggyTransactionToDraft({ id: "x", type: "DEBIT", amount: -25, date: "2026-10-01T00:00:00Z", description: "DL*99 RIDESAO PAULOBRA" }, "a1");
+  assert.equal(draft.categoryId, "transporte");
+  const semPista = core.mapPluggyTransactionToDraft({ id: "y", type: "DEBIT", amount: -25, date: "2026-10-01T00:00:00Z", description: "Pix enviado FULANO" }, "a1");
+  assert.equal(semPista.categoryId, "outros");
+});

@@ -147,3 +147,16 @@ test("sincronizar: se falhar, a dívida volta a ficar sem grupo", async () => {
   await assert.rejects(syncDebtTransactions(db, "h1", db.tables.debts[0]), FALHA);
   assert.equal(db.tables.debts[0].group_id, null);
 });
+
+test("applyCategoryToIds muda só categoria, subcategoria e revisão, em blocos", async () => {
+  const { applyCategoryToIds } = await import("../lib/data/transactions.js");
+  const rows = Array.from({ length: 250 }, (_, i) => ({ id: `t${i}`, household_id: "h", category_id: "outros", subcategory: "Diversos", needs_review: true, value: 10 + i, date: "2026-10-01" }));
+  rows.push({ id: "outra", household_id: "h2", category_id: "outros", subcategory: "Diversos", needs_review: true, value: 1, date: "2026-10-01" });
+  const fake = createFakeSupabase({ transactions: rows });
+  await applyCategoryToIds(fake, "h", rows.slice(0, 250).map((r) => r.id), "saude", "Farmácia");
+  const mudou = fake.tables.transactions.filter((r) => r.household_id === "h");
+  assert.ok(mudou.every((r) => r.category_id === "saude" && r.subcategory === "Farmácia" && r.needs_review === false));
+  assert.equal(mudou[5].value, 15); // valor intacto
+  assert.equal(fake.tables.transactions.find((r) => r.id === "outra").category_id, "outros"); // outra família não é afetada
+  assert.equal(fake.calls.filter((c) => c.op === "update").length, 3); // 250 ids em 3 blocos
+});
