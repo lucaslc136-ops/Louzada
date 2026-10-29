@@ -347,3 +347,49 @@ test("painel de 28/10/2026 com conta, cartão e dívida", () => {
   assert.equal(antes.parcelasDividaAteFimDoMes, 800);
   assert.equal(antes.comprometidoMes, antes.faturaTotalAberta + 800);
 });
+
+/* ---------------- pagamento de fatura não é receita nem despesa ---------------- */
+test("pagamento de fatura (crédito no cartão e débito que pagou) fica fora de receitas e despesas", () => {
+  const accounts = [
+    { id: "itau", type: "conta", saldo_inicial: 0 },
+    { id: "caixa", type: "cartao", limite: 5000, dia_fechamento: 25, dia_vencimento: 5 },
+  ];
+  const map = accountsToMap(accounts);
+  const t = (id, account_id, type, value, date, note, extra = {}) => ({ id, account_id, type, value, date, note, category_id: type === "receita" ? "renda" : "outros", ...extra });
+  const txs = [
+    t("sal", "itau", "receita", 5000, "2026-10-05", "Salário"),
+    t("deb", "itau", "despesa", 608.83, "2026-10-09", "Pagamento de boleto CARTOES CAIXA ELO PF"),
+    t("c1", "caixa", "receita", 608.83, "2026-10-09", "PGTO.BOLETO REGISTRADO"),
+    t("c2", "caixa", "receita", 608.83, "2026-10-09", "Pagamento recebido"), // o banco repete o mesmo pagamento
+    t("c3", "caixa", "receita", 0.11, "2026-10-19", "AJUSTE CRED PARC S/ JUROS"),
+    t("mercado", "itau", "despesa", 300, "2026-10-12", "Supermercado"),
+  ];
+  const ids = core.cardPaymentIds(txs, map);
+  assert.deepEqual([...ids].sort(), ["c1", "c2", "c3", "deb"]);
+  // meses de caixa: crédito do cartão cai no bucket da fatura; compara só outubro nas contas da conta corrente
+  const serie = computeMonthlySeries(txs, map, "2026-11", 2);
+  const totalReceitas = serie.reduce((s, m) => s + m.receitas, 0);
+  const totalDespesas = serie.reduce((s, m) => s + m.despesas, 0);
+  assert.equal(totalReceitas, 5000); // só o salário
+  assert.equal(totalDespesas, 300); // só o mercado
+  // categorias e orçamento também ignoram o débito do boleto
+  const cat = computeCategoryBreakdown(txs, map, "2026-10");
+  assert.equal(cat.sum, 300);
+  // o saldo da conta corrente continua descontando o pagamento (o dinheiro saiu de verdade)
+  assert.equal(computeAccountBalance(accounts[0], txs, "2026-10-28"), 5000 - 608.83 - 300);
+});
+
+test("despesa comum com o mesmo valor de um crédito de cartão não é confundida com pagamento", () => {
+  const accounts = [
+    { id: "itau", type: "conta", saldo_inicial: 0 },
+    { id: "k", type: "cartao", limite: 1000, dia_fechamento: 25, dia_vencimento: 5 },
+  ];
+  const map = accountsToMap(accounts);
+  const txs = [
+    { id: "a", account_id: "k", type: "receita", value: 100, date: "2026-10-09", note: "Estorno loja" },
+    { id: "b", account_id: "itau", type: "despesa", value: 100, date: "2026-10-09", note: "Farmácia" }, // sem palavra de pagamento
+  ];
+  const ids = core.cardPaymentIds(txs, map);
+  assert.ok(ids.has("a"));
+  assert.ok(!ids.has("b"));
+});
