@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Plus, Trash2, Wallet, CreditCard, Link2, RefreshCw, Check, X, AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import LoadError from "@/components/load-error";
 import { getMyHouseholdId, listAccounts, createAccount, updateAccount, deleteAccount } from "@/lib/data/accounts";
 import { listAllTransactions } from "@/lib/data/transactions";
 import { listDebts } from "@/lib/data/debts";
@@ -17,6 +18,8 @@ export default function ContasPage() {
   const today = useMemo(() => toISODate(new Date()), []);
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [householdId, setHouseholdId] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const [transactions, setTransactions] = useState([]);
@@ -58,13 +61,18 @@ export default function ContasPage() {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const hid = await getMyHouseholdId(supabase);
-      setHouseholdId(hid);
-      if (hid) await reload(hid);
+      setLoadError(false);
+      try {
+        const hid = await getMyHouseholdId(supabase);
+        setHouseholdId(hid);
+        if (hid) await reload(hid);
+      } catch (e) {
+        setLoadError(true);
+      }
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadAttempt]);
 
   async function handleAddAccount() {
     if (!newAccountName.trim() || !householdId) return;
@@ -248,15 +256,21 @@ export default function ContasPage() {
     if (accounts.length <= 1) { showToast("Mantenha ao menos uma conta cadastrada."); return; }
     const inUse = transactions.some((t) => t.account_id === account.id) || debts.some((d) => d.conta_id === account.id);
     if (inUse) {
-      const ok = window.confirm("Essa conta tem lançamentos ou dívidas associadas. Remover mesmo assim?");
-      if (!ok) return;
+      // Remover a conta deixaria os lançamentos sem conta, e eles sairiam de todos os saldos.
+      showToast("Essa conta tem lançamentos ou dívidas. Mova ou exclua esses itens antes de remover a conta.");
+      return;
     }
-    await deleteAccount(supabase, account.id);
-    setAccounts((prev) => prev.filter((a) => a.id !== account.id));
-    showToast("Conta removida.");
+    try {
+      await deleteAccount(supabase, account.id);
+      setAccounts((prev) => prev.filter((a) => a.id !== account.id));
+      showToast("Conta removida.");
+    } catch {
+      showToast("Não consegui remover a conta.");
+    }
   }
 
   if (loading) return <p className="text-sm" style={{ color: "var(--ink-soft)" }}>Carregando…</p>;
+  if (loadError) return <LoadError onRetry={() => setLoadAttempt((n) => n + 1)} />;
 
   return (
     <div className="space-y-6">

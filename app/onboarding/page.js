@@ -18,29 +18,10 @@ export default function OnboardingPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    const { data: household, error: createError } = await supabase
-      .from("households")
-      .insert({ name })
-      .select()
-      .single();
-
-    if (createError) {
-      setLoading(false);
-      setError("Não consegui criar a família. Tente de novo.");
-      return;
-    }
-
-    const { error: memberError } = await supabase
-      .from("household_members")
-      .insert({ household_id: household.id, user_id: user.id, role: "owner" });
-
+    const { error: rpcError } = await supabase.rpc("create_household", { p_name: name });
     setLoading(false);
-    if (memberError) {
-      setError("Família criada, mas não consegui te adicionar nela. Tente recarregar a página.");
+    if (rpcError) {
+      setError("Não consegui criar a família. Tente de novo.");
       return;
     }
     router.push("/dashboard");
@@ -51,29 +32,14 @@ export default function OnboardingPage() {
     e.preventDefault();
     setError("");
     setLoading(true);
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    const { data: household, error: findError } = await supabase
-      .from("households")
-      .select("id")
-      .eq("invite_code", code.trim().toLowerCase())
-      .maybeSingle();
-
-    if (findError || !household) {
-      setLoading(false);
-      setError("Não encontrei nenhuma família com esse código. Confira e tente de novo.");
-      return;
-    }
-
-    const { error: memberError } = await supabase
-      .from("household_members")
-      .insert({ household_id: household.id, user_id: user.id, role: "member" });
-
+    const { error: rpcError } = await supabase.rpc("join_household_by_code", { p_code: code });
     setLoading(false);
-    if (memberError) {
-      setError("Não consegui entrar nessa família. Talvez você já faça parte dela — tente recarregar.");
+    if (rpcError) {
+      setError(
+        /invalid_code/.test(rpcError.message || "")
+          ? "Não encontrei nenhuma família com esse código. Confira e tente de novo."
+          : "Não consegui entrar nessa família. Tente de novo."
+      );
       return;
     }
     router.push("/dashboard");

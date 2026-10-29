@@ -1,5 +1,6 @@
 "use client";
 
+import LoadError from "@/components/load-error";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { User, Mail, KeyRound, LogOut, Check, Users, Copy, Tag, Plus, Trash2, Landmark, AlertTriangle } from "lucide-react";
@@ -14,6 +15,8 @@ export default function ConfiguracoesPage() {
   const supabase = createClient();
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [householdId, setHouseholdId] = useState(null);
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
@@ -54,31 +57,39 @@ export default function ConfiguracoesPage() {
 
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        setEmail(user.email || "");
-        setName(user.user_metadata?.full_name || "");
+      setLoading(true);
+      setLoadError(false);
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          setEmail(user.email || "");
+          setName(user.user_metadata?.full_name || "");
 
-        const { data: membership } = await supabase
-          .from("household_members")
-          .select("household_id, households(name, invite_code)")
-          .eq("user_id", user.id)
-          .limit(1)
-          .maybeSingle();
-        if (membership) {
-          setHouseholdId(membership.household_id);
-          setHouseholdName(membership.households?.name || "");
-          setInviteCode(membership.households?.invite_code || "");
-          const cats = await listCustomCategories(supabase, membership.household_id);
-          setCustomCategories(cats);
-          const accs = await listAccounts(supabase, membership.household_id);
-          setAccounts(accs);
+          const { data: membership, error: membershipError } = await supabase
+            .from("household_members")
+            .select("household_id, households(name, invite_code)")
+            .eq("user_id", user.id)
+            .order("created_at", { ascending: true })
+            .limit(1)
+            .maybeSingle();
+          if (membershipError) throw membershipError;
+          if (membership) {
+            setHouseholdId(membership.household_id);
+            setHouseholdName(membership.households?.name || "");
+            setInviteCode(membership.households?.invite_code || "");
+            const cats = await listCustomCategories(supabase, membership.household_id);
+            setCustomCategories(cats);
+            const accs = await listAccounts(supabase, membership.household_id);
+            setAccounts(accs);
+          }
         }
+      } catch (e) {
+        setLoadError(true);
       }
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadAttempt]);
 
   async function copyInvite() {
     try {
@@ -214,6 +225,7 @@ export default function ConfiguracoesPage() {
   }
 
   if (loading) return <p className="text-sm" style={{ color: "var(--ink-soft)" }}>Carregando…</p>;
+  if (loadError) return <LoadError onRetry={() => setLoadAttempt((n) => n + 1)} />;
 
   return (
     <div className="space-y-5 max-w-md">

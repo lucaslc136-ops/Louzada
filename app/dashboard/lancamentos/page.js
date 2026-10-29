@@ -7,6 +7,7 @@ import {
   Wallet, TrendingUp, TrendingDown, Scale, Receipt, SlidersHorizontal, Download,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
+import LoadError from "@/components/load-error";
 import { getMyHouseholdId, listAccounts, createAccount } from "@/lib/data/accounts";
 import { listTransactionsForMonthWindow, listTransactionsForRange, createTransaction, updateTransaction, deleteTransaction, deleteTransactionGroup, deleteTransactionsByIds, listTransactionsByIds } from "@/lib/data/transactions";
 import { listCustomCategories } from "@/lib/data/categories";
@@ -30,6 +31,8 @@ export default function LancamentosPage() {
   const today = useMemo(() => toISODate(new Date()), []);
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [householdId, setHouseholdId] = useState(null);
   const [accounts, setAccounts] = useState([]);
   const [customCategories, setCustomCategories] = useState([]);
@@ -82,21 +85,26 @@ export default function LancamentosPage() {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const hid = await getMyHouseholdId(supabase);
-      setHouseholdId(hid);
-      if (hid) {
-        const [accs, customCats] = await Promise.all([listAccounts(supabase, hid), listCustomCategories(supabase, hid)]);
-        setAccounts(accs);
-        setCustomCategories(customCats);
-        if (accs.length && !form.accountId) {
-          setForm((f) => ({ ...f, accountId: accs[0].id }));
+      setLoadError(false);
+      try {
+        const hid = await getMyHouseholdId(supabase);
+        setHouseholdId(hid);
+        if (hid) {
+          const [accs, customCats] = await Promise.all([listAccounts(supabase, hid), listCustomCategories(supabase, hid)]);
+          setAccounts(accs);
+          setCustomCategories(customCats);
+          if (accs.length && !form.accountId) {
+            setForm((f) => ({ ...f, accountId: accs[0].id }));
+          }
+          await reloadTransactions(hid, monthCursor);
         }
-        await reloadTransactions(hid, monthCursor);
+      } catch (e) {
+        setLoadError(true);
       }
       setLoading(false);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadAttempt]);
 
   // Se a pessoa clicou num alerta "aguardando revisão" no sino, a URL vem com ?review=id1,id2 —
   // busca exatamente esses lançamentos (de qualquer mês) e mostra só eles, em vez do mês atual.
@@ -404,6 +412,7 @@ export default function LancamentosPage() {
   if (loading) {
     return <p className="text-sm" style={{ color: "var(--ink-soft)" }}>Carregando seus lançamentos…</p>;
   }
+  if (loadError) return <LoadError onRetry={() => setLoadAttempt((n) => n + 1)} />;
 
   if (!householdId) {
     return <p className="text-sm" style={{ color: "var(--rose)" }}>Não encontrei sua família. Tente recarregar a página.</p>;

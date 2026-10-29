@@ -40,6 +40,7 @@ export default function AlertsBell() {
 
   useEffect(() => {
     (async () => {
+      try {
       const hid = await getMyHouseholdId(supabase);
       if (!hid) return;
       setHouseholdId(hid);
@@ -51,6 +52,9 @@ export default function AlertsBell() {
         getSettings(supabase, hid),
       ]);
       setAlerts(computeAlerts({ accounts, transactions, debts, settings, todayISO: toISODate(new Date()) }));
+      } catch {
+        // O sino é secundário: se a leitura falhar, fica sem alertas em vez de quebrar a página.
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
